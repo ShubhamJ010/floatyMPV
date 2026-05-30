@@ -9,6 +9,9 @@ final class GestureTrackingView: NSView {
     private var cursorHidden = false
     private var pinchBaseFrame: NSRect?
     private var pinchBaseCenter: NSPoint?
+    private let pickupWindowScale: CGFloat = 1.08
+    private var pendingDropWorkItem: DispatchWorkItem?
+    private let pickupDropDebounce: TimeInterval = 0.08
     private var localScrollMonitor: Any?
     private var globalScrollMonitor: Any?
 
@@ -34,6 +37,7 @@ final class GestureTrackingView: NSView {
     }
 
     deinit {
+        cancelPendingDrop()
         removeScrollMonitors()
         showCursorIfNeeded()
     }
@@ -57,6 +61,7 @@ final class GestureTrackingView: NSView {
     }
 
     override func touchesCancelled(with event: NSEvent) {
+        cancelPendingDrop()
         trackedTouches.removeAll()
         setPickup(active: false)
         lastCentroid = nil
@@ -76,6 +81,7 @@ final class GestureTrackingView: NSView {
         }
 
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            cancelPendingDrop()
             trackedTouches.removeAll()
             setPickup(active: false)
             lastCentroid = nil
@@ -152,6 +158,7 @@ final class GestureTrackingView: NSView {
         let touchCount = trackedTouches.count
 
         if touchCount == 2 {
+            cancelPendingDrop()
             setPickup(active: true)
             if lastCentroid == nil {
                 print("[Gesture] Two-finger contact started")
@@ -161,17 +168,19 @@ final class GestureTrackingView: NSView {
         }
 
         if touchCount < 2 {
-            setPickup(active: false)
+            scheduleDropIfNeeded()
             lastCentroid = nil
             return
         }
 
+        cancelPendingDrop()
         setPickup(active: false)
     }
 
     private func setPickup(active: Bool) {
         if pickupActive == active { return }
         pickupActive = active
+        applyPickupWindowScale(active: active)
         if active {
             hideCursorIfNeeded()
         } else {
@@ -179,6 +188,41 @@ final class GestureTrackingView: NSView {
         }
         onPickedUpChanged?(active)
         print("[Gesture] Pickup state: \(active ? "active" : "inactive")")
+    }
+
+    private func scheduleDropIfNeeded() {
+        guard pickupActive else { return }
+        if pendingDropWorkItem != nil { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingDropWorkItem = nil
+            if self.trackedTouches.count < 2 {
+                self.setPickup(active: false)
+            }
+        }
+        pendingDropWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + pickupDropDebounce, execute: workItem)
+    }
+
+    private func cancelPendingDrop() {
+        pendingDropWorkItem?.cancel()
+        pendingDropWorkItem = nil
+    }
+
+    private func applyPickupWindowScale(active: Bool) {
+        guard let window else { return }
+
+        let currentFrame = window.frame
+        let center = NSPoint(x: currentFrame.midX, y: currentFrame.midY)
+        let factor = active ? pickupWindowScale : (1.0 / pickupWindowScale)
+
+        let nextWidth = max(window.minSize.width, currentFrame.width * factor)
+        let nextHeight = max(window.minSize.height, currentFrame.height * factor)
+        let nextOrigin = NSPoint(x: center.x - (nextWidth / 2.0), y: center.y - (nextHeight / 2.0))
+        let nextFrame = NSRect(origin: nextOrigin, size: NSSize(width: nextWidth, height: nextHeight))
+
+        window.setFrame(nextFrame, display: true, animate: true)
     }
 
     private func hideCursorIfNeeded() {

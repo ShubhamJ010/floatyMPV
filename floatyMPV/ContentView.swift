@@ -48,12 +48,11 @@ private struct PrototypeCardView: View {
             }
             .padding(16)
         }
-        .scaleEffect(isPickedUp ? 1.03 : 1.0)
         .shadow(
-            color: .black.opacity(isPickedUp ? 0.45 : 0.2),
-            radius: isPickedUp ? 26 : 10,
-            y: isPickedUp ? 16 : 4
+            color: .black.opacity(isPickedUp ? 0.68 : 0.2),
+            radius: isPickedUp ? 40 : 10,
+            y: isPickedUp ? 30 : 4
         )
-        .animation(.spring(response: 0.2, dampingFraction: 0.82), value: isPickedUp)
+        .animation(.spring(response: 0.22, dampingFraction: 0.76), value: isPickedUp)
     }
 }
