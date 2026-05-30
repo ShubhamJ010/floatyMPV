@@ -18,6 +18,9 @@ final class GestureTrackingView: NSView {
     private var cursorHidden = false
     private var pinchBaseFrame: NSRect?
     private var pinchBaseCenter: NSPoint?
+    private var pinchAccumulatedScale: CGFloat = 1.0
+    private var pinchHitMinDuringCurrentGesture = false
+    private var pinchHitMaxDuringCurrentGesture = false
     private let pickupWindowScale: CGFloat = 1.0
     private var pendingDropWorkItem: DispatchWorkItem?
     private let pickupDropDebounce: TimeInterval = 0.08
@@ -232,21 +235,51 @@ final class GestureTrackingView: NSView {
         if pinchBaseFrame == nil {
             pinchBaseFrame = window.frame
             pinchBaseCenter = NSPoint(x: window.frame.midX, y: window.frame.midY)
+            pinchAccumulatedScale = 1.0
+            pinchHitMinDuringCurrentGesture = false
+            pinchHitMaxDuringCurrentGesture = false
             print("[Gesture] Pinch resize started")
         }
 
         guard let baseFrame = pinchBaseFrame, let baseCenter = pinchBaseCenter else { return }
 
-        /// Clamp window size within reasonable bounds.
-        let minWidth = max(window.minSize.width, 220)
-        let minHeight = max(window.minSize.height, 140)
-        let maxWidth: CGFloat = 1200
-        let maxHeight: CGFloat = 900
-        let scale = max(0.65, min(1.8, 1.0 + event.magnification))
+        /// Clamp window size within reasonable bounds while preserving aspect ratio.
+        let aspectRatio = max(baseFrame.width / max(baseFrame.height, 1.0), 0.01)
+        let minWidth = max(window.minSize.width, WindowAccessor.minWindowSize.width)
+        let minHeight = max(window.minSize.height, WindowAccessor.minWindowSize.height)
+        let maxWidth = WindowAccessor.maxWindowSize.width
+        let maxHeight = WindowAccessor.maxWindowSize.height
+        let gestureStepScale = max(0.92, min(1.08, 1.0 + event.magnification))
+        pinchAccumulatedScale *= gestureStepScale
+        let requestedScale = pinchAccumulatedScale
 
-        /// Calculate new frame dimensions.
-        let nextWidth = max(minWidth, min(maxWidth, baseFrame.width * scale))
-        let nextHeight = max(minHeight, min(maxHeight, baseFrame.height * scale))
+        let scaleFloor = max(minWidth / baseFrame.width, minHeight / baseFrame.height)
+        let scaleCeiling = min(maxWidth / baseFrame.width, maxHeight / baseFrame.height)
+        let scale = max(scaleFloor, min(scaleCeiling, requestedScale))
+
+        if scale <= scaleFloor + 0.0001 {
+            pinchAccumulatedScale = scaleFloor
+            if !pinchHitMinDuringCurrentGesture {
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                pinchHitMinDuringCurrentGesture = true
+            }
+        } else {
+            pinchHitMinDuringCurrentGesture = false
+        }
+
+        if scale >= scaleCeiling - 0.0001 {
+            pinchAccumulatedScale = scaleCeiling
+            if !pinchHitMaxDuringCurrentGesture {
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                pinchHitMaxDuringCurrentGesture = true
+            }
+        } else {
+            pinchHitMaxDuringCurrentGesture = false
+        }
+
+        /// Calculate new frame dimensions from a single scale factor to keep ratio locked.
+        let nextWidth = baseFrame.width * scale
+        let nextHeight = nextWidth / aspectRatio
         let nextOrigin = NSPoint(x: baseCenter.x - (nextWidth / 2.0), y: baseCenter.y - (nextHeight / 2.0))
         let nextFrame = NSRect(origin: nextOrigin, size: NSSize(width: nextWidth, height: nextHeight))
 
@@ -257,6 +290,9 @@ final class GestureTrackingView: NSView {
     override func endGesture(with event: NSEvent) {
         pinchBaseFrame = nil
         pinchBaseCenter = nil
+        pinchAccumulatedScale = 1.0
+        pinchHitMinDuringCurrentGesture = false
+        pinchHitMaxDuringCurrentGesture = false
         print("[Gesture] Gesture sequence ended")
         super.endGesture(with: event)
     }
@@ -426,6 +462,9 @@ final class GestureTrackingView: NSView {
         lastCentroid = nil
         pinchBaseFrame = nil
         pinchBaseCenter = nil
+        pinchAccumulatedScale = 1.0
+        pinchHitMinDuringCurrentGesture = false
+        pinchHitMaxDuringCurrentGesture = false
         print("[Gesture] Reset pickup state: \(reason)")
     }
 

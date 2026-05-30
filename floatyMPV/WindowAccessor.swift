@@ -5,6 +5,9 @@ import SwiftUI
 /// the underlying macOS `NSWindow` object, providing fine-grained control
 /// over the window style (borderless, floating, etc.) that pure SwiftUI cannot offer.
 struct WindowAccessor: NSViewRepresentable {
+    static let minWindowSize = NSSize(width: 280, height: 180)
+    static let maxWindowSize = NSSize(width: 589, height: 360)
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         /// We use `DispatchQueue.main.async` because the `NSWindow` might not
@@ -36,6 +39,7 @@ struct WindowAccessor: NSViewRepresentable {
     /// window events into our application logic.
     final class Coordinator: NSObject, NSWindowDelegate {
         private weak var configuredWindow: NSWindow?
+        private var isApplyingResizeClamp = false
 
         /// Configures the `NSWindow` with specific styling needed for a PiP-style window.
         func configure(window: NSWindow) {
@@ -55,7 +59,8 @@ struct WindowAccessor: NSViewRepresentable {
             window.level = .floating
             window.isMovableByWindowBackground = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            window.minSize = NSSize(width: 280, height: 180)
+            window.minSize = WindowAccessor.minWindowSize
+            window.maxSize = WindowAccessor.maxWindowSize
             window.setFrame(window.frame, display: true)
 
             /// Configuring the underlying layer for rounded corners.
@@ -75,6 +80,28 @@ struct WindowAccessor: NSViewRepresentable {
 
         func windowDidResize(_ notification: Notification) {
             guard let window = notification.object as? NSWindow else { return }
+            guard !isApplyingResizeClamp else {
+                print("[Window] Did resize to: \(window.frame.size)")
+                return
+            }
+
+            let maxSize = WindowAccessor.maxWindowSize
+            var nextFrame = window.frame
+            let clampedWidth = min(nextFrame.width, maxSize.width)
+            let clampedHeight = min(nextFrame.height, maxSize.height)
+
+            if clampedWidth != nextFrame.width || clampedHeight != nextFrame.height {
+                isApplyingResizeClamp = true
+                let center = NSPoint(x: nextFrame.midX, y: nextFrame.midY)
+                nextFrame.size = NSSize(width: clampedWidth, height: clampedHeight)
+                nextFrame.origin = NSPoint(
+                    x: center.x - (clampedWidth / 2.0),
+                    y: center.y - (clampedHeight / 2.0)
+                )
+                window.setFrame(nextFrame, display: true, animate: false)
+                isApplyingResizeClamp = false
+            }
+
             print("[Window] Did resize to: \(window.frame.size)")
         }
     }
