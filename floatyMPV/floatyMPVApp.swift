@@ -13,5 +13,6 @@ struct floatyMPVApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowResizability(.contentMinSize)
     }
 }
