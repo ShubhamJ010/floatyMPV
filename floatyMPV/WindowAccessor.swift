@@ -40,7 +40,7 @@ struct WindowAccessor: NSViewRepresentable {
             window.backgroundColor = .clear
             window.isOpaque = false
             window.level = .floating
-            window.isMovableByWindowBackground = true
+            window.isMovableByWindowBackground = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.minSize = NSSize(width: 280, height: 180)
             window.setFrame(window.frame, display: true)

@@ -14,6 +14,9 @@ final class GestureTrackingView: NSView {
     private let pickupDropDebounce: TimeInterval = 0.08
     private var localScrollMonitor: Any?
     private var globalScrollMonitor: Any?
+    private var appDidResignActiveObserver: Any?
+    private var mouseDragStartWindowFrame: NSRect?
+    private var mouseDragStartScreenPoint: NSPoint?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -25,6 +28,7 @@ final class GestureTrackingView: NSView {
         acceptsTouchEvents = true
         wantsRestingTouches = true
         installScrollMonitorsIfNeeded()
+        installAppStateObserversIfNeeded()
         print("[Gesture] Tracking surface initialized")
     }
 
@@ -34,11 +38,13 @@ final class GestureTrackingView: NSView {
         acceptsTouchEvents = true
         wantsRestingTouches = true
         installScrollMonitorsIfNeeded()
+        installAppStateObserversIfNeeded()
     }
 
     deinit {
         cancelPendingDrop()
         removeScrollMonitors()
+        removeAppStateObservers()
         showCursorIfNeeded()
     }
 
@@ -61,11 +67,47 @@ final class GestureTrackingView: NSView {
     }
 
     override func touchesCancelled(with event: NSEvent) {
-        cancelPendingDrop()
-        trackedTouches.removeAll()
-        setPickup(active: false)
-        lastCentroid = nil
+        resetPickupState(reason: "touches-cancelled")
         super.touchesCancelled(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else {
+            super.mouseDown(with: event)
+            return
+        }
+        mouseDragStartWindowFrame = window.frame
+        mouseDragStartScreenPoint = window.convertPoint(toScreen: event.locationInWindow)
+        setPickup(active: true)
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard
+            let window,
+            let startFrame = mouseDragStartWindowFrame,
+            let startPoint = mouseDragStartScreenPoint
+        else {
+            super.mouseDragged(with: event)
+            return
+        }
+
+        let currentPoint = window.convertPoint(toScreen: event.locationInWindow)
+        let dx = currentPoint.x - startPoint.x
+        let dy = currentPoint.y - startPoint.y
+
+        var nextFrame = startFrame
+        nextFrame.origin.x += dx
+        nextFrame.origin.y += dy
+        window.setFrame(nextFrame, display: false, animate: false)
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        mouseDragStartWindowFrame = nil
+        mouseDragStartScreenPoint = nil
+        resetPickupState(reason: "mouse-up")
+        super.mouseUp(with: event)
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -76,15 +118,24 @@ final class GestureTrackingView: NSView {
     }
 
     private func handleScrollMove(with event: NSEvent, source: String) -> Bool {
-        guard pickupActive, let window else {
+        guard let window else {
+            return false
+        }
+
+        if !NSApp.isActive && source == "global-monitor" && !pickupActive {
+            let cursorPoint = NSEvent.mouseLocation
+            guard window.frame.contains(cursorPoint) else {
+                return false
+            }
+            setPickup(active: true)
+        }
+
+        guard pickupActive else {
             return false
         }
 
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-            cancelPendingDrop()
-            trackedTouches.removeAll()
-            setPickup(active: false)
-            lastCentroid = nil
+            resetPickupState(reason: "phase-end-\(source)")
             print("[Gesture] Pickup released by phase end from \(source)")
             return true
         }
@@ -179,6 +230,9 @@ final class GestureTrackingView: NSView {
 
     private func setPickup(active: Bool) {
         if pickupActive == active { return }
+        if active && !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         pickupActive = active
         applyPickupWindowScale(active: active)
         if active {
@@ -264,5 +318,37 @@ final class GestureTrackingView: NSView {
             NSEvent.removeMonitor(globalScrollMonitor)
             self.globalScrollMonitor = nil
         }
+
+    }
+
+    private func installAppStateObserversIfNeeded() {
+        if appDidResignActiveObserver == nil {
+            appDidResignActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.resetPickupState(reason: "app-resign-active")
+            }
+        }
+    }
+
+    private func removeAppStateObservers() {
+        if let appDidResignActiveObserver {
+            NotificationCenter.default.removeObserver(appDidResignActiveObserver)
+            self.appDidResignActiveObserver = nil
+        }
+    }
+
+    private func resetPickupState(reason: String) {
+        cancelPendingDrop()
+        trackedTouches.removeAll()
+        setPickup(active: false)
+        mouseDragStartWindowFrame = nil
+        mouseDragStartScreenPoint = nil
+        lastCentroid = nil
+        pinchBaseFrame = nil
+        pinchBaseCenter = nil
+        print("[Gesture] Reset pickup state: \(reason)")
     }
 }
