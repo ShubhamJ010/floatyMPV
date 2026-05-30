@@ -6,39 +6,32 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// `ContentView` is the primary view of our application.
-/// It conforms to the `View` protocol, which requires a `body` property
-/// that returns a layout defined in SwiftUI's declarative syntax.
 struct ContentView: View {
-    /// `@State` is a property wrapper that tells SwiftUI to manage the storage
-    /// of this property. When the value of `isPickedUp` changes, SwiftUI will
-    /// automatically re-render the view hierarchy that depends on this value.
-    /// It is declared as `private` because it is internal to `ContentView`.
     @State private var isPickedUp = false
+    @State private var isTargeted = false
 
-    /// The `body` property defines the visual structure of the view.
     var body: some View {
         ZStack {
-            /// `VisualEffectView` provides the hard Gaussian blur (material effect).
-            /// We use `.hudWindow` for a strong, "hard" blur appearance.
+            /// `VisualEffectView` provides the hard Gaussian blur.
             VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                /// Subtle scale effect when targeted by a drop.
+                .scaleEffect(isTargeted ? 1.02 : 1.0)
+            
+            /// Visual indicator for the drop zone.
+            DropZoneOverlay(isTargeted: isTargeted)
         }
-        /// `.shadow` adds visual depth. We change shadow parameters based on
-        /// the `isPickedUp` state to create a "lifted" effect when interaction occurs.
+        /// `.shadow` adds visual depth.
         .shadow(
-            color: .black.opacity(isPickedUp ? 0.45 : 0.15),
-            radius: isPickedUp ? 30 : 10,
-            y: isPickedUp ? 20 : 4
+            color: .black.opacity(isPickedUp || isTargeted ? 0.45 : 0.15),
+            radius: isPickedUp || isTargeted ? 30 : 10,
+            y: isPickedUp || isTargeted ? 20 : 4
         )
-        /// The `.background` modifier places `WindowAccessor` behind the card.
         .background(WindowAccessor())
-
-        /// `.overlay` stacks `GestureSurface` on top of the card.
         .overlay(GestureSurface(isPickedUp: $isPickedUp))
-
-        /// The `.frame` modifier sets constraints on the view's dimensions.
         .frame(
             minWidth: 280,
             idealWidth: 360,
@@ -47,8 +40,50 @@ struct ContentView: View {
             idealHeight: 220,
             maxHeight: .infinity
         )
-        /// `.animation` defines how the view transitions between states.
-        .animation(.spring(response: 0.22, dampingFraction: 0.76), value: isPickedUp)
+        /// Register as a drop destination for file URLs.
+        .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+            handleDrop(providers: providers)
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isPickedUp)
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isTargeted)
+    }
+
+    /// Processes the dropped items and filters for .mp4 files.
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = provider.loadObject(ofClass: URL.self) { url, error in
+                    if let url = url {
+                        if url.pathExtension.lowercased() == "mp4" {
+                            print("[DropZone] Accepted MP4: \(url.path)")
+                        } else {
+                            print("[DropZone] Rejected: \(url.path) (not an MP4)")
+                        }
+                    }
+                }
+            }
+        }
+        return true
+    }
+}
+
+/// A visual overlay that appears when dragging a file over the window.
+private struct DropZoneOverlay: View {
+    let isTargeted: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "square.and.arrow.down.fill")
+                .font(.system(size: 32, weight: .medium))
+                .foregroundStyle(isTargeted ? .primary : .secondary)
+                .scaleEffect(isTargeted ? 1.1 : 0.9)
+            
+            Text(isTargeted ? "Drop to Play MP4" : "Drop MP4 Video Here")
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .foregroundStyle(isTargeted ? .primary : .secondary)
+        }
+        .opacity(isTargeted ? 1.0 : 0.4)
+        .blur(radius: isTargeted ? 0 : 0.5)
     }
 }
 
