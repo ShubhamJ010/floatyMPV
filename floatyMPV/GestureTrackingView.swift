@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 /// `GestureTrackingView` is a custom `NSView` subclass responsible for handling
 /// complex user input gestures on macOS, such as dragging, pinching, and touch events.
@@ -17,7 +18,7 @@ final class GestureTrackingView: NSView {
     private var cursorHidden = false
     private var pinchBaseFrame: NSRect?
     private var pinchBaseCenter: NSPoint?
-    private let pickupWindowScale: CGFloat = 1.08
+    private let pickupWindowScale: CGFloat = 1.0
     private var pendingDropWorkItem: DispatchWorkItem?
     private let pickupDropDebounce: TimeInterval = 0.08
     private var localScrollMonitor: Any?
@@ -25,6 +26,9 @@ final class GestureTrackingView: NSView {
     private var appDidResignActiveObserver: Any?
     private var mouseDragStartWindowFrame: NSRect?
     private var mouseDragStartScreenPoint: NSPoint?
+    private let snapEngine = SnapEngine()
+    private var recentScrollSamples: [ScrollSample] = []
+    private var snapAnimationInFlight = false
 
     /// `acceptsFirstResponder` must return `true` to enable the view to receive
     /// mouse events and keyboard input.
@@ -163,6 +167,14 @@ final class GestureTrackingView: NSView {
             return false
         }
 
+        if snapAnimationInFlight {
+            return true
+        }
+
+        if source == "global-monitor" && NSApp.isActive {
+            return false
+        }
+
         /// Handle window "pickup" even if the app isn't active,
         /// if the user is scrolling over the window.
         if !NSApp.isActive && source == "global-monitor" && !pickupActive {
@@ -179,6 +191,7 @@ final class GestureTrackingView: NSView {
 
         /// Stop pickup if the scroll gesture ends.
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            maybeSnapWindowFromRecentSwipe(window: window)
             resetPickupState(reason: "phase-end-\(source)")
             print("[Gesture] Pickup released by phase end from \(source)")
             return true
@@ -192,9 +205,12 @@ final class GestureTrackingView: NSView {
         if abs(dx) < 0.01 && abs(dy) < 0.01 { return true }
 
         var nextFrame = window.frame
-        nextFrame.origin.x += dx
-        nextFrame.origin.y -= dy
+        let moveDX = dx
+        let moveDY = -dy
+        nextFrame.origin.x += moveDX
+        nextFrame.origin.y += moveDY
         window.setFrame(nextFrame, display: false, animate: false)
+        recordScrollSample(dx: moveDX, dy: moveDY)
 
         let kind = event.momentumPhase.isEmpty ? "Two-finger" : "Momentum"
         print("[Gesture] \(kind) move [\(source)] delta: (\(dx), \(-dy)) frame: \(window.frame)")
@@ -287,6 +303,9 @@ final class GestureTrackingView: NSView {
             NSApp.activate(ignoringOtherApps: true)
         }
         pickupActive = active
+        if !active {
+            recentScrollSamples.removeAll(keepingCapacity: true)
+        }
         applyPickupWindowScale(active: active)
         if active {
             hideCursorIfNeeded()
@@ -399,6 +418,7 @@ final class GestureTrackingView: NSView {
 
     private func resetPickupState(reason: String) {
         cancelPendingDrop()
+        recentScrollSamples.removeAll(keepingCapacity: true)
         trackedTouches.removeAll()
         setPickup(active: false)
         mouseDragStartWindowFrame = nil
@@ -407,5 +427,186 @@ final class GestureTrackingView: NSView {
         pinchBaseFrame = nil
         pinchBaseCenter = nil
         print("[Gesture] Reset pickup state: \(reason)")
+    }
+
+    private func recordScrollSample(dx: CGFloat, dy: CGFloat) {
+        let now = CACurrentMediaTime()
+        let sample = ScrollSample(time: now, dx: dx, dy: dy)
+        recentScrollSamples.append(sample)
+
+        let minTime = now - SnapEngine.Config.velocityWindow
+        recentScrollSamples.removeAll { $0.time < minTime }
+    }
+
+    private func maybeSnapWindowFromRecentSwipe(window: NSWindow) {
+        guard !recentScrollSamples.isEmpty else { return }
+
+        let now = CACurrentMediaTime()
+        let minTime = now - SnapEngine.Config.velocityWindow
+        let activeSamples = recentScrollSamples.filter { $0.time >= minTime }
+        guard !activeSamples.isEmpty else { return }
+
+        let elapsed = max(activeSamples.last!.time - activeSamples.first!.time, 0.016)
+        let totalDX = activeSamples.reduce(CGFloat.zero) { $0 + $1.dx }
+        let totalDY = activeSamples.reduce(CGFloat.zero) { $0 + $1.dy }
+        let velocityX = totalDX / elapsed
+        let velocityY = totalDY / elapsed
+
+        snapAnimationInFlight = true
+        recentScrollSamples.removeAll(keepingCapacity: true)
+        snapEngine.animateSnap(window: window, velocityX: velocityX, velocityY: velocityY) { [weak self] in
+            self?.snapAnimationInFlight = false
+        }
+    }
+}
+
+private struct ScrollSample {
+    let time: CFTimeInterval
+    let dx: CGFloat
+    let dy: CGFloat
+}
+
+private struct SnapEngine {
+    struct Config {
+        static let cornerInset: CGFloat = 16
+        static let velocityWindow: CFTimeInterval = 0.10
+        static let overshootDistance: CGFloat = 8
+        static let glideDuration: TimeInterval = 0.62
+        static let settleDuration: TimeInterval = 0.52
+    }
+
+    private enum Corner {
+        case topLeft
+        case topRight
+        case bottomLeft
+        case bottomRight
+    }
+
+    func animateSnap(window: NSWindow, velocityX: CGFloat, velocityY: CGFloat, completion: @escaping () -> Void) {
+        let visibleFrame = resolveVisibleFrame(for: window.frame)
+        let corner = resolveCorner(
+            velocityX: velocityX,
+            velocityY: velocityY,
+            currentFrame: window.frame,
+            visibleFrame: visibleFrame
+        )
+        let targetFrame = targetFrame(for: window.frame, in: visibleFrame, corner: corner)
+        let overshootFrame = overshootFrame(from: window.frame, target: targetFrame)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Config.glideDuration
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.90, 0.30, 1.0)
+            window.animator().setFrame(overshootFrame, display: true)
+        } completionHandler: {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Config.settleDuration
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.20, 0.88, 0.28, 1.0)
+                window.animator().setFrame(targetFrame, display: true)
+            } completionHandler: {
+                completion()
+            }
+        }
+    }
+
+    private func resolveCorner(velocityX: CGFloat, velocityY: CGFloat, currentFrame: NSRect, visibleFrame: NSRect) -> Corner {
+        let speed = max(hypot(velocityX, velocityY), 0.001)
+        let swipeVector = NSPoint(x: velocityX / speed, y: velocityY / speed)
+        let windowCenter = NSPoint(x: currentFrame.midX, y: currentFrame.midY)
+
+        let cornerCenters: [(Corner, NSPoint)] = [
+            (.topLeft, NSPoint(
+                x: visibleFrame.minX + Config.cornerInset + (currentFrame.width / 2.0),
+                y: visibleFrame.maxY - Config.cornerInset - (currentFrame.height / 2.0)
+            )),
+            (.topRight, NSPoint(
+                x: visibleFrame.maxX - Config.cornerInset - (currentFrame.width / 2.0),
+                y: visibleFrame.maxY - Config.cornerInset - (currentFrame.height / 2.0)
+            )),
+            (.bottomLeft, NSPoint(
+                x: visibleFrame.minX + Config.cornerInset + (currentFrame.width / 2.0),
+                y: visibleFrame.minY + Config.cornerInset + (currentFrame.height / 2.0)
+            )),
+            (.bottomRight, NSPoint(
+                x: visibleFrame.maxX - Config.cornerInset - (currentFrame.width / 2.0),
+                y: visibleFrame.minY + Config.cornerInset + (currentFrame.height / 2.0)
+            ))
+        ]
+
+        var bestCorner: Corner = .bottomRight
+        var bestScore: CGFloat = -.infinity
+
+        for (corner, center) in cornerCenters {
+            let vx = center.x - windowCenter.x
+            let vy = center.y - windowCenter.y
+            let length = max(hypot(vx, vy), 0.001)
+            let directionToCorner = NSPoint(x: vx / length, y: vy / length)
+            let dot = (directionToCorner.x * swipeVector.x) + (directionToCorner.y * swipeVector.y)
+
+            if dot > bestScore {
+                bestScore = dot
+                bestCorner = corner
+            }
+        }
+
+        return bestCorner
+    }
+
+    private func resolveVisibleFrame(for windowFrame: NSRect) -> NSRect {
+        let windowCenter = NSPoint(x: windowFrame.midX, y: windowFrame.midY)
+        let screens = NSScreen.screens
+
+        if let direct = screens.first(where: { $0.visibleFrame.contains(windowCenter) }) {
+            return direct.visibleFrame
+        }
+
+        return screens.min(by: {
+            squaredDistance(from: windowCenter, to: $0.visibleFrame) <
+            squaredDistance(from: windowCenter, to: $1.visibleFrame)
+        })?.visibleFrame ?? NSScreen.main?.visibleFrame ?? windowFrame
+    }
+
+    private func targetFrame(for currentFrame: NSRect, in visibleFrame: NSRect, corner: Corner) -> NSRect {
+        let width = currentFrame.width
+        let height = currentFrame.height
+        let inset = Config.cornerInset
+
+        let x: CGFloat
+        let y: CGFloat
+
+        switch corner {
+        case .topLeft:
+            x = visibleFrame.minX + inset
+            y = visibleFrame.maxY - height - inset
+        case .topRight:
+            x = visibleFrame.maxX - width - inset
+            y = visibleFrame.maxY - height - inset
+        case .bottomLeft:
+            x = visibleFrame.minX + inset
+            y = visibleFrame.minY + inset
+        case .bottomRight:
+            x = visibleFrame.maxX - width - inset
+            y = visibleFrame.minY + inset
+        }
+
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    private func overshootFrame(from currentFrame: NSRect, target: NSRect) -> NSRect {
+        var frame = target
+        let dx = target.midX - currentFrame.midX
+        let dy = target.midY - currentFrame.midY
+        let distance = max(hypot(dx, dy), 0.001)
+        frame.origin.x += (dx / distance) * Config.overshootDistance
+        frame.origin.y += (dy / distance) * Config.overshootDistance
+        return frame
+    }
+
+
+    private func squaredDistance(from point: NSPoint, to rect: NSRect) -> CGFloat {
+        let clampedX = min(max(point.x, rect.minX), rect.maxX)
+        let clampedY = min(max(point.y, rect.minY), rect.maxY)
+        let dx = point.x - clampedX
+        let dy = point.y - clampedY
+        return (dx * dx) + (dy * dy)
     }
 }
