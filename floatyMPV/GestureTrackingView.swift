@@ -1,6 +1,14 @@
 import AppKit
 
+/// `GestureTrackingView` is a custom `NSView` subclass responsible for handling
+/// complex user input gestures on macOS, such as dragging, pinching, and touch events.
+///
+/// Because SwiftUI's gesture system is simplified, we use AppKit's lower-level `NSResponder`
+/// methods (like `mouseDown`, `touchesBegan`, `scrollWheel`, `magnify`)
+/// to achieve precise, high-performance interactions required for this application.
 final class GestureTrackingView: NSView {
+    /// A closure used to inform SwiftUI of changes to the "pickup" state.
+    /// It bridges the AppKit event world to the SwiftUI state world.
     var onPickedUpChanged: ((Bool) -> Void)?
 
     private var trackedTouches: [ObjectIdentifier: NSPoint] = [:]
@@ -18,15 +26,22 @@ final class GestureTrackingView: NSView {
     private var mouseDragStartWindowFrame: NSRect?
     private var mouseDragStartScreenPoint: NSPoint?
 
+    /// `acceptsFirstResponder` must return `true` to enable the view to receive
+    /// mouse events and keyboard input.
     override var acceptsFirstResponder: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        /// `wantsLayer = true` tells AppKit to back this view with a Core Animation
+        /// layer, which is necessary for smooth animations and performance.
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        
+        /// Configuring touch input types and enabling rest touch tracking.
         allowedTouchTypes = [.indirect]
         acceptsTouchEvents = true
         wantsRestingTouches = true
+        
         installScrollMonitorsIfNeeded()
         installAppStateObserversIfNeeded()
         print("[Gesture] Tracking surface initialized")
@@ -48,18 +63,23 @@ final class GestureTrackingView: NSView {
         showCursorIfNeeded()
     }
 
+    // MARK: - Touch Handling (Trackpad)
+
+    /// Called when a touch starts on the trackpad.
     override func touchesBegan(with event: NSEvent) {
         updateTrackedTouches(with: event)
         handleTouchState()
         super.touchesBegan(with: event)
     }
 
+    /// Called when a touch moves on the trackpad.
     override func touchesMoved(with event: NSEvent) {
         updateTrackedTouches(with: event)
         handleTouchState()
         super.touchesMoved(with: event)
     }
 
+    /// Called when a touch ends on the trackpad.
     override func touchesEnded(with event: NSEvent) {
         updateTrackedTouches(with: event)
         handleTouchState()
@@ -71,14 +91,22 @@ final class GestureTrackingView: NSView {
         super.touchesCancelled(with: event)
     }
 
+    // MARK: - Mouse Handling (Click & Drag)
+
     override func mouseDown(with event: NSEvent) {
         guard let window else {
             super.mouseDown(with: event)
             return
         }
+        /// Record the starting state to calculate the drag delta accurately.
         mouseDragStartWindowFrame = window.frame
         mouseDragStartScreenPoint = window.convertPoint(toScreen: event.locationInWindow)
-        setPickup(active: true)
+        
+        /// Bring app to front if clicked, but do not trigger "pickup" scaling.
+        if !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        
         super.mouseDown(with: event)
     }
 
@@ -92,6 +120,7 @@ final class GestureTrackingView: NSView {
             return
         }
 
+        /// Calculate the movement delta from the starting point.
         let currentPoint = window.convertPoint(toScreen: event.locationInWindow)
         let dx = currentPoint.x - startPoint.x
         let dy = currentPoint.y - startPoint.y
@@ -99,6 +128,8 @@ final class GestureTrackingView: NSView {
         var nextFrame = startFrame
         nextFrame.origin.x += dx
         nextFrame.origin.y += dy
+        
+        /// Move the window based on the mouse movement delta.
         window.setFrame(nextFrame, display: false, animate: false)
         super.mouseDragged(with: event)
     }
@@ -106,9 +137,17 @@ final class GestureTrackingView: NSView {
     override func mouseUp(with event: NSEvent) {
         mouseDragStartWindowFrame = nil
         mouseDragStartScreenPoint = nil
-        resetPickupState(reason: "mouse-up")
+        
+        /// Only reset the global pickup state if we aren't currently 
+        /// being held up by a two-finger trackpad gesture.
+        if trackedTouches.count < 2 {
+            resetPickupState(reason: "mouse-up")
+        }
+        
         super.mouseUp(with: event)
     }
+
+    // MARK: - Gesture Handling (Scroll, Zoom)
 
     override func scrollWheel(with event: NSEvent) {
         guard handleScrollMove(with: event, source: "local-view") else {
@@ -117,11 +156,15 @@ final class GestureTrackingView: NSView {
         }
     }
 
+    /// Processes scroll events to move the window.
+    /// This is used for two-finger gestures on a trackpad to drag the window.
     private func handleScrollMove(with event: NSEvent, source: String) -> Bool {
         guard let window else {
             return false
         }
 
+        /// Handle window "pickup" even if the app isn't active,
+        /// if the user is scrolling over the window.
         if !NSApp.isActive && source == "global-monitor" && !pickupActive {
             let cursorPoint = NSEvent.mouseLocation
             guard window.frame.contains(cursorPoint) else {
@@ -134,12 +177,14 @@ final class GestureTrackingView: NSView {
             return false
         }
 
+        /// Stop pickup if the scroll gesture ends.
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
             resetPickupState(reason: "phase-end-\(source)")
             print("[Gesture] Pickup released by phase end from \(source)")
             return true
         }
 
+        /// Scale factor to adjust scroll speed.
         let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1.0 : 12.0
         let dx = event.scrollingDeltaX * scale
         let dy = event.scrollingDeltaY * scale
@@ -156,15 +201,18 @@ final class GestureTrackingView: NSView {
         return true
     }
 
+    /// Handles smart magnification (often double-tap with two fingers).
     override func smartMagnify(with event: NSEvent) {
         guard let window else { return }
         window.zoom(nil)
         print("[Gesture] Smart magnify: toggled maximize/restore")
     }
 
+    /// Handles pinch gestures for resizing the window.
     override func magnify(with event: NSEvent) {
         guard let window else { return }
 
+        /// Store the initial frame to perform relative scaling.
         if pinchBaseFrame == nil {
             pinchBaseFrame = window.frame
             pinchBaseCenter = NSPoint(x: window.frame.midX, y: window.frame.midY)
@@ -173,12 +221,14 @@ final class GestureTrackingView: NSView {
 
         guard let baseFrame = pinchBaseFrame, let baseCenter = pinchBaseCenter else { return }
 
+        /// Clamp window size within reasonable bounds.
         let minWidth = max(window.minSize.width, 220)
         let minHeight = max(window.minSize.height, 140)
         let maxWidth: CGFloat = 1200
         let maxHeight: CGFloat = 900
         let scale = max(0.65, min(1.8, 1.0 + event.magnification))
 
+        /// Calculate new frame dimensions.
         let nextWidth = max(minWidth, min(maxWidth, baseFrame.width * scale))
         let nextHeight = max(minHeight, min(maxHeight, baseFrame.height * scale))
         let nextOrigin = NSPoint(x: baseCenter.x - (nextWidth / 2.0), y: baseCenter.y - (nextHeight / 2.0))
@@ -194,6 +244,8 @@ final class GestureTrackingView: NSView {
         print("[Gesture] Gesture sequence ended")
         super.endGesture(with: event)
     }
+
+    // MARK: - State Management
 
     private func updateTrackedTouches(with event: NSEvent) {
         let activeTouches = event.touches(matching: .touching, in: self)
@@ -230,6 +282,7 @@ final class GestureTrackingView: NSView {
 
     private func setPickup(active: Bool) {
         if pickupActive == active { return }
+        /// Bring app to front if pickup starts.
         if active && !NSApp.isActive {
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -248,6 +301,8 @@ final class GestureTrackingView: NSView {
         guard pickupActive else { return }
         if pendingDropWorkItem != nil { return }
 
+        /// Use a `DispatchWorkItem` to debounce state changes,
+        /// preventing flickering if touch input is interrupted briefly.
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingDropWorkItem = nil
@@ -294,6 +349,8 @@ final class GestureTrackingView: NSView {
     }
 
     private func installScrollMonitorsIfNeeded() {
+        /// Monitor scroll events locally (within the app) and globally (system-wide).
+        /// This allows the window to be draggable even when not explicitly focused.
         if localScrollMonitor == nil {
             localScrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel]) { [weak self] event in
                 guard let self else { return event }

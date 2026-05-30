@@ -16,13 +16,23 @@ FloatyMPV is a lightweight floating video player for macOS that aims to feel lik
 - Hardware-accelerated playback through `libmpv`
 - Native AppKit window mechanics
 
-## Architecture direction
+## Architecture & Tooling
 
+### Architecture
 - UI: AppKit first
 - Playback: `libmpv`
 - Rendering: `CAMetalLayer` plus `mpv_render_context`
 - Window system: custom `NSWindow`
 - Packaging: Swift Package Manager
+
+### Tooling
+- **Editor**: Zed / Cursor / VS Code
+- **Build**: Xcodebuild / Xcode
+- **Dependencies**: Swift Package Manager
+- **UI**: SwiftUI + AppKit hybrid
+- **Graphics**: Metal
+- **Playback**: AVFoundation / libmpv
+- **Automation**: Fastlane / Tuist
 
 ## Recommended build order
 
