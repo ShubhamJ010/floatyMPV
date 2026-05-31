@@ -33,6 +33,15 @@ FloatyMPV is a lightweight floating video player for macOS that aims to feel lik
 - **Graphics**: OpenGL
 - **Playback**: `libmpv`
 
+### Technology Roles & Responsibilities
+- **SwiftUI**: Handles the high-level UI structure, drop zones, visual animations, and coordinates app states (like knowing when the window is "picked up" or not).
+- **AppKit**: Manages the low-level macOS window system, mouse/trackpad gestures, and bridges the core operating system events to our code.
+- **OpenGL**: Acts as the high-performance GPU "canvas" that allows the video player to draw video frames directly to the screen using hardware acceleration.
+- **libmpv (MPV)**: The core playback engine that decodes video files, synchronizes audio, and feeds raw video frame data to OpenGL.
+- **CAOpenGLLayer (Core Animation)**: Bridges the gap between raw OpenGL GPU graphics and the macOS window compositor, enabling rounded corners, translucent blur, and native window drop shadows on the video layer.
+- **SnapEngine (Magnetic Snapping)**: A pure geometry engine that calculates window physics and animates the window gliding and settling into screen corners.
+- **VideoToolbox (Hardware Decoder)**: The native macOS hardware decoding framework used by libmpv to decode H.264/H.265 video streams directly on the Mac's silicon chip to save battery life.
+
 ## Recommended build order
 
 1. Window mechanics
