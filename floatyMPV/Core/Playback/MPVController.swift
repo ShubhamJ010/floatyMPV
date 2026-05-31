@@ -15,6 +15,7 @@ class MPVController: NSObject, ObservableObject {
     @Published var playbackSpeed: Double = 1.0
     @Published var videoWidth: Int = 0
     @Published var videoHeight: Int = 0
+    @Published var hasActiveFile = false
 
     var videoAspectRatio: CGFloat {
         guard videoWidth > 0, videoHeight > 0 else { return 1.0 }
@@ -183,6 +184,7 @@ class MPVController: NSObject, ObservableObject {
 
     // Load file command
     func loadFile(path: String) {
+        hasActiveFile = true
         mpvCommand(["loadfile", path])
     }
 
@@ -257,6 +259,11 @@ class MPVController: NSObject, ObservableObject {
 
     private func handleEvent(_ event: UnsafePointer<mpv_event>) {
         switch event.pointee.event_id {
+        case MPV_EVENT_END_FILE:
+            mpvCommand(["playlist-clear"])
+            DispatchQueue.main.async { [weak self] in
+                self?.hasActiveFile = false
+            }
         case MPV_EVENT_PROPERTY_CHANGE:
             let prop = event.pointee.data.assumingMemoryBound(to: mpv_event_property.self).pointee
             let name = String(cString: prop.name)
@@ -294,29 +301,4 @@ class MPVController: NSObject, ObservableObject {
             break
         }
     }
-}
-
-fileprivate func mpvGetOpenGLFunc(_ ctx: UnsafeMutableRawPointer?, _ name: UnsafePointer<Int8>?) -> UnsafeMutableRawPointer? {
-    let symbolName: CFString = CFStringCreateWithCString(kCFAllocatorDefault, name, kCFStringEncodingASCII)
-    guard let addr = CFBundleGetFunctionPointerForName(
-        CFBundleGetBundleWithIdentifier("com.apple.opengl" as CFString),
-        symbolName
-    ) else {
-        return nil
-    }
-    return addr
-}
-
-fileprivate func mpvUpdateCallback(_ ctx: UnsafeMutableRawPointer?) {
-    guard let ctx = ctx else { return }
-    let layer = bridge(ptr: ctx) as ViewLayer
-    layer.update()
-}
-
-func bridge<T : AnyObject>(ptr : UnsafeRawPointer) -> T {
-    return Unmanaged<T>.fromOpaque(ptr).takeUnretainedValue()
-}
-
-func mutableRawPointerOf<T : AnyObject>(obj : T) -> UnsafeMutableRawPointer {
-    return UnsafeMutableRawPointer(Unmanaged.passUnretained(obj).toOpaque())
 }

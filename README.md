@@ -21,18 +21,17 @@ FloatyMPV is a lightweight floating video player for macOS that aims to feel lik
 ### Architecture
 - UI: AppKit first
 - Playback: `libmpv`
-- Rendering: `CAMetalLayer` plus `mpv_render_context`
+- Rendering: `CAOpenGLLayer` + `mpv_opengl_fbo` + `mpv_render_context_render`
 - Window system: custom `NSWindow`
-- Packaging: Swift Package Manager
+- Packaging: Xcode project
 
 ### Tooling
 - **Editor**: Zed / Cursor / VS Code
 - **Build**: Xcodebuild / Xcode
-- **Dependencies**: Swift Package Manager
+- **Dependencies**: Xcode project (`.xcodeproj`)
 - **UI**: SwiftUI + AppKit hybrid
-- **Graphics**: Metal
-- **Playback**: AVFoundation / libmpv
-- **Automation**: Fastlane / Tuist
+- **Graphics**: OpenGL
+- **Playback**: `libmpv`
 
 ## Recommended build order
 
@@ -40,44 +39,116 @@ FloatyMPV is a lightweight floating video player for macOS that aims to feel lik
 2. Gesture handling
 3. Snap engine
 4. Playback integration
-5. Metal rendering
-6. Overlay controls
-7. Streaming support
-8. Polish and persistence
+5. Overlay controls
+6. Streaming support
+7. Polish and persistence
 
-## Project structure
+## Architecture
+
+The app follows a domain-oriented architecture with clear ownership boundaries:
 
 ```text
-Sources/
-├── App/
-├── Window/
-├── Playback/
-├── Gestures/
-├── Snap/
-├── Rendering/
-├── Overlay/
-├── Models/
-├── Utilities/
-└── Resources/
+floatyMPV/
+├── App/                          # Application lifecycle & entry point
+│   └── floatyMPVApp.swift
+├── Core/                         # Domain subsystems (no UI dependency)
+│   ├── Playback/                 # mpv lifecycle, commands, events
+│   │   └── MPVController.swift
+│   ├── Rendering/                # OpenGL render pipeline (isolated)
+│   │   ├── VideoPlayerView.swift  # SwiftUI bridge
+│   │   ├── VideoView.swift        # NSView container
+│   │   └── ViewLayer.swift        # CAOpenGLLayer + mpv_render_context_render
+│   ├── Gestures/                 # Touch, scroll, pinch, mouse drag
+│   │   ├── GestureSurface.swift      # SwiftUI→AppKit bridge
+│   │   └── GestureTrackingView.swift # NSResponder gesture handling
+│   ├── Windowing/                # NSWindow setup, resize, aspect ratio
+│   │   └── WindowAccessor.swift
+│   ├── Snapping/                 # Magnetic corner snap (geometry only)
+│   │   └── SnapEngine.swift
+│   └── Shortcuts/                # Keyboard shortcut mapping (pure logic)
+│       └── KeyboardShortcutHandler.swift
+├── Features/                     # Future: overlays, settings, playlists, PiP
+├── UI/                           # Reusable SwiftUI presentation components
+│   ├── ContentView.swift         # View composition & drop handling
+│   ├── DropZoneOverlay.swift
+│   └── VisualEffectView.swift    # NSVisualEffectView bridge
+├── Utilities/                    # Shared helpers (grouped by domain)
+│   ├── Concurrency/              # Thread-safe wrappers
+│   │   └── Atomic.swift
+│   └── Extensions/               # C interop helpers
+│       └── MPVPointers.swift
+├── Resources/                    # Assets.xcassets
+├── Support/                      # Bridging header, build configuration
+│   └── floatyMPV-Bridging-Header.h
+├── Tests/                        # Future test targets
+└── Docs/                         # Architecture documentation
 ```
 
-## Agent docs
+## Architectural Rules
 
-Implementation agents live in [`agents/`](./agents/). Each file describes one workstream and the scope it owns.
+### Dependency direction
+```
+UI → Core
+Features → Core
+Core subsystems are independent of each other
+```
+
+### Rendering isolation
+- Rendering (`Core/Rendering/`) must NOT import gestures, overlays, or feature modules.
+
+### Playback independence
+- Playback must NOT know about windowing internals or gesture state.
+
+### Snapping is geometry-only
+- SnapEngine operates on NSRect only — no playback or windowing dependency.
 
 Workflow rules live in [`AGENTS.md`](./AGENTS.md). Read that before touching code.
 
-## Current App Structure
+## Current Architecture
 
-The initial gesture prototype has been split out of `ContentView.swift` into focused types:
+The app uses a hybrid SwiftUI/AppKit architecture with `NSViewRepresentable` bridges for every non-SwiftUI surface:
 
-- `ContentView.swift` owns the SwiftUI composition and local UI state
-- `WindowAccessor.swift` owns `NSWindow` setup and window lifecycle logging
-- `GestureSurface.swift` bridges SwiftUI state to the gesture surface
-- `GestureTrackingView.swift` owns touch, scroll, pinch, cursor, and keyboard behavior
-- `KeyboardShortcutHandler.swift` owns the key-to-command mapping decision tree
+- `App/floatyMPVApp.swift` — `@main` entry point
+- `UI/ContentView.swift` — SwiftUI composition and local UI state, drop handling
+- `Core/Windowing/WindowAccessor.swift` — `NSWindow` setup (borderless, floating, aspect-ratio clamping)
+- `Core/Gestures/GestureSurface.swift` — SwiftUI bridge to the gesture surface
+- `Core/Gestures/GestureTrackingView.swift` — touch, scroll, pinch, cursor, keyboard
+- `Core/Shortcuts/KeyboardShortcutHandler.swift` — key-to-command mapping
+- `Core/Rendering/VideoPlayerView.swift` → `VideoView.swift` → `ViewLayer.swift` — OpenGL rendering
+- `Core/Playback/MPVController.swift` — `libmpv` lifecycle, rendering context, command API
+- `Core/Snapping/SnapEngine.swift` — magnetic corner snap (extracted from gesture layer)
+- `Utilities/Concurrency/Atomic.swift` — thread-safe property wrapper
+- `Utilities/Extensions/MPVPointers.swift` — C interop helpers
 
-That split follows the project rule that `ContentView.swift` should stay small and not mix UI composition with AppKit window or gesture logic.
+## MPV Configuration
+
+`MPVController.mpvInit()` tunes the player for a small, energy-efficient floating window. These are the actual options set on startup:
+
+| Option | Value | Purpose |
+|---|---|---|
+| `vo` | `libmpv` | Render into the application's own surface |
+| `hwdec` | `auto` | Enable VideoToolbox hardware decoding when available |
+| `vd-lavc-threads` | `0` | Auto-detect decode thread count |
+| `opengl-pbo` | `yes` | Faster GPU uploads via pixel buffer objects |
+| `opengl-glfinish` | `no` | Non-blocking; `glFlush` is used instead |
+| `framedrop` | `vo` | Drop render frames to keep audio in sync |
+| `video-reversal-buffer` | `disabled` | Disable reversal buffer (not needed for linear playback) |
+| `vd-lavc-fast` | `yes` | Fast decode hacks for responsiveness |
+| `vd-lavc-skiploopfilter` | `nonref` | Skip non-reference frames to save energy |
+| `scale` / `dscale` / `cscale` | `bilinear` | Cheap scaling filters (no GPU waste on a small window) |
+| `scale-antiring` | `0.0` | No antiringing cost |
+| `correct-downscaling` | `no` | Skip correction passes |
+| `linear-downscaling` | `no` | Skip linear correction |
+| `linear-upscaling` | `no` | Skip linear correction |
+| `video-latency-hacks` | `yes` | Lower decode latency for snappier playback |
+
+**Observed properties**: `time-pos`, `duration`, `pause`, `volume`, `speed`, `dwidth`, `dheight`.
+
+These choices trade maximum quality for responsiveness and battery life, which is the right trade-off for a PiP-style floating player.
+
+## Loading Videos
+
+Drag and drop a video file onto the window. Supported extensions: `mp4`, `mkv`, `avi`, `mov`, `m4v`, `flv`.
 
 ## Keyboard Shortcuts
 
@@ -88,7 +159,8 @@ All shortcuts are handled by `GestureTrackingView.keyDown(with:)` which delegate
 | Key | Action |
 |---|---|
 | `Space` | Toggle play/pause |
-| `W` | Stop video and unload file |
+| `W` | Stop, clear queue, reset to pre-playback state |
+| `Q` | Stop, clear queue, reset state, then close window |
 
 ### Seek
 
@@ -136,7 +208,7 @@ All shortcuts are handled by `GestureTrackingView.keyDown(with:)` which delegate
 |---|---|
 | `Enter` | Toggle fullscreen |
 | `F` | Toggle fullscreen |
-| `Q` | Close window |
+
 
 ### Capture
 
@@ -152,4 +224,6 @@ All shortcuts are handled by `GestureTrackingView.keyDown(with:)` which delegate
 
 ## Status
 
-This repository currently contains the initial design scaffold only. The next step is to create the AppKit window prototype and keep gesture code out of `ContentView.swift` as it grows.
+A working prototype exists with a borderless floating AppKit window, magnetic corner snapping, `libmpv` OpenGL playback, keyboard shortcuts, and drag-and-drop file loading.
+
+The current focus is stabilizing gesture interactions and refining window behavior before adding overlay controls or streaming support.

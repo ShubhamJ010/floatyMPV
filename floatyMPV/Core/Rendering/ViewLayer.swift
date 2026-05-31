@@ -140,18 +140,3 @@ class ViewLayer: CAOpenGLLayer {
         return cglContext
     }
 }
-
-@propertyWrapper
-struct Atomic<Value> {
-    private let lock = NSLock()
-    private var value: Value
-
-    var wrappedValue: Value {
-        get { lock.withLock { value } }
-        set { lock.withLock { value = newValue } }
-    }
-
-    init(wrappedValue: Value) {
-        self.value = wrappedValue
-    }
-}

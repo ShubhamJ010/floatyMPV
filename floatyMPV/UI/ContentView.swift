@@ -13,7 +13,6 @@ struct ContentView: View {
     @StateObject private var playerController = MPVController()
     @State private var isPickedUp = false
     @State private var isTargeted = false
-    @State private var videoLoaded = false
     var body: some View {
         ZStack {
             /// `VisualEffectView` provides the hard Gaussian blur.
@@ -22,7 +21,7 @@ struct ContentView: View {
                 /// Subtle scale effect when targeted by a drop.
                 .scaleEffect(isTargeted ? 1.02 : 1.0)
             
-            if videoLoaded {
+            if playerController.hasActiveFile {
                 VideoPlayerView(playerController: playerController)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
@@ -67,7 +66,6 @@ struct ContentView: View {
                             print("[DropZone] Accepted: \(url.path)")
                             DispatchQueue.main.async {
                                 playerController.loadFile(path: url.path)
-                                videoLoaded = true
                             }
                         } else {
                             print("[DropZone] Rejected: \(url.path) (unsupported format)")
@@ -79,43 +77,3 @@ struct ContentView: View {
         return true
     }
 }
-
-/// A visual overlay that appears when dragging a file over the window.
-private struct DropZoneOverlay: View {
-    let isTargeted: Bool
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "square.and.arrow.down.fill")
-                .font(.system(size: 32, weight: .medium))
-                .foregroundStyle(isTargeted ? .primary : .secondary)
-                .scaleEffect(isTargeted ? 1.1 : 0.9)
-            
-            Text(isTargeted ? "Drop to Play Video" : "Drop Video Here")
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .foregroundStyle(isTargeted ? .primary : .secondary)
-        }
-        .opacity(isTargeted ? 1.0 : 0.4)
-        .blur(radius: isTargeted ? 0 : 0.5)
-    }
-}
-
-/// A helper view that wraps `NSVisualEffectView` for macOS blur effects.
-struct VisualEffectView: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let visualEffectView = NSVisualEffectView()
-        visualEffectView.material = material
-        visualEffectView.blendingMode = blendingMode
-        visualEffectView.state = .active
-        return visualEffectView
-    }
-
-    func updateNSView(_ visualEffectView: NSVisualEffectView, context: Context) {
-        visualEffectView.material = material
-        visualEffectView.blendingMode = blendingMode
-    }
-}
-

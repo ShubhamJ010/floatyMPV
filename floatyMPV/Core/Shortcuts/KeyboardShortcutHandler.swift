@@ -87,9 +87,10 @@ struct KeyboardShortcutHandler {
 
         // ── Close / Stop ──────────────────────────────────────────
 
-        case 13 where mods.isEmpty:          // W   stop video
+        case 13 where mods.isEmpty:          // W   stop + clear queue + reset
             controller.stop(); return true
-        case 12 where mods.isEmpty:          // Q   close window
+        case 12 where mods.isEmpty:          // Q   stop + clear queue + reset + close
+            controller.stop()
             window.close(); return true
 
         // ── Screenshot ────────────────────────────────────────────
