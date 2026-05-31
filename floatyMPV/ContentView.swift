@@ -10,9 +10,10 @@ import UniformTypeIdentifiers
 
 /// `ContentView` is the primary view of our application.
 struct ContentView: View {
+    @StateObject private var playerController = MPVController()
     @State private var isPickedUp = false
     @State private var isTargeted = false
-
+    @State private var videoLoaded = false
     var body: some View {
         ZStack {
             /// `VisualEffectView` provides the hard Gaussian blur.
@@ -21,8 +22,13 @@ struct ContentView: View {
                 /// Subtle scale effect when targeted by a drop.
                 .scaleEffect(isTargeted ? 1.02 : 1.0)
             
-            /// Visual indicator for the drop zone.
-            DropZoneOverlay(isTargeted: isTargeted)
+            if videoLoaded {
+                VideoPlayerView(playerController: playerController)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            } else {
+                /// Visual indicator for the drop zone.
+                DropZoneOverlay(isTargeted: isTargeted)
+            }
         }
         /// `.shadow` adds visual depth.
         .shadow(
@@ -30,7 +36,7 @@ struct ContentView: View {
             radius: isPickedUp || isTargeted ? 30 : 10,
             y: isPickedUp || isTargeted ? 20 : 4
         )
-        .background(WindowAccessor())
+        .background(WindowAccessor(aspectRatio: playerController.videoAspectRatio))
         .overlay(GestureSurface(isPickedUp: $isPickedUp))
         .frame(
             minWidth: 280,
@@ -54,10 +60,17 @@ struct ContentView: View {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 _ = provider.loadObject(ofClass: URL.self) { url, error in
                     if let url = url {
-                        if url.pathExtension.lowercased() == "mp4" {
-                            print("[DropZone] Accepted MP4: \(url.path)")
+                        let pathExtension = url.pathExtension.lowercased()
+                        // Support typical video formats mpv supports
+                        let supportedExtensions = ["mp4", "mkv", "avi", "mov", "m4v", "flv"]
+                        if supportedExtensions.contains(pathExtension) {
+                            print("[DropZone] Accepted: \(url.path)")
+                            DispatchQueue.main.async {
+                                playerController.loadFile(path: url.path)
+                                videoLoaded = true
+                            }
                         } else {
-                            print("[DropZone] Rejected: \(url.path) (not an MP4)")
+                            print("[DropZone] Rejected: \(url.path) (unsupported format)")
                         }
                     }
                 }
@@ -78,7 +91,7 @@ private struct DropZoneOverlay: View {
                 .foregroundStyle(isTargeted ? .primary : .secondary)
                 .scaleEffect(isTargeted ? 1.1 : 0.9)
             
-            Text(isTargeted ? "Drop to Play MP4" : "Drop MP4 Video Here")
+            Text(isTargeted ? "Drop to Play Video" : "Drop Video Here")
                 .font(.system(size: 14, weight: .semibold, design: .rounded))
                 .foregroundStyle(isTargeted ? .primary : .secondary)
         }
@@ -105,3 +118,4 @@ struct VisualEffectView: NSViewRepresentable {
         visualEffectView.blendingMode = blendingMode
     }
 }
+
