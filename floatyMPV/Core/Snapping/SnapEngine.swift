@@ -6,10 +6,22 @@
 import AppKit
 import QuartzCore
 
-/// Drives magnetic corner snapping for floating window.
+/// Drives the magnetic corner-snap animation for the floating window.
 ///
-/// Operates purely on window geometry — no knowledge of playback,
-/// gestures, or rendering.
+/// This type is explicitly geometry-only: it knows nothing about playback,
+/// gestures, or how the window is rendered. It takes an `NSWindow`, a velocity
+/// vector, and produces an animated frame change — then finishes.
+///
+/// The animation has two phases:
+///   1. **Glide** — the window quickly overshoots the target corner (elastic feel).
+///   2. **Settle** — the window eases into the final resting position.
+///
+/// Which corner? Choosen by dot-product alignment between:
+///   - the "swipe direction" (the direction the finger was moving), and
+///   - the vector from the window center to each corner center.
+///
+/// For a new Swift developer: physics / animation imports are *not* required.
+/// This is pure `NSAnimationContext` + geometry math.
 struct SnapEngine {
     struct Config {
         static let cornerInset: CGFloat = 16

@@ -7,25 +7,61 @@ import Cocoa
 import Foundation
 import Combine
 
+/// `MPVController` is the bridge between our SwiftUI/AppKit app and `libmpv`
+/// (the C playback engine). It owns:
+///   - The libmpv handle (`mpv`) and render context (`mpvRenderContext`)
+///   - All playback state published to the UI (`@Published` properties)
+///   - Commands issued to mpv (load, seek, pause, speed, etc.)
+///   - A background event loop that pumps libmpv events back onto the main thread
+///
+/// Swift developers: think of this as a "wrapper object" around a C library.
+/// The `mpv` property is an opaque pointer (`OpaquePointer`) because Swift
+/// does not know the concrete type behind it — the real C struct header lives
+/// in `mpv/client.h`, imported via the bridging header.
+///
+/// Rendering context creation happens in `mpvInitRendering(layer:)` and requires
+/// an OpenGL context to be current on the calling thread. See `ViewLayer` for where
+/// the OpenGL context is created and locked.
 class MPVController: NSObject, ObservableObject {
-    @Published var currentTime: Double = 0.0
-    @Published var duration: Double = 0.0
-    @Published var isPaused: Bool = true
-    @Published var volume: Double = 100.0
-    @Published var playbackSpeed: Double = 1.0
+    // MARK: - Published UI State
+    //
+    // These are what the SwiftUI views observe. Any change here automatically
+    // refreshes the UI thanks to Combine's @Published.
+    @Published var currentTime: Double = 0.0   // Current playback position in seconds
+    @Published var duration: Double = 0.0       // Total video length in seconds
+    @Published var isPaused: Bool = true        // Whether playback is currently paused
+    @Published var volume: Double = 100.0        // Volume (0-100+)
+    @Published var playbackSpeed: Double = 1.0  // Playback rate multiplier
     @Published var videoWidth: Int = 0
     @Published var videoHeight: Int = 0
-    @Published var hasActiveFile = false
+    @Published var hasActiveFile = false         // True after a video is loaded
 
+    /// Computed aspect ratio of the loaded video. Used by `WindowAccessor`
+    /// to lock the window shape so the video is not stretched.
     var videoAspectRatio: CGFloat {
         guard videoWidth > 0, videoHeight > 0 else { return 1.0 }
         return CGFloat(videoWidth) / CGFloat(videoHeight)
     }
 
+    // MARK: - C Interop Handles
+    //
+    // `mpv` is the "handle" — the root object of the libmpv engine.
+    // You create it once, and all other operations use it.
     var mpv: OpaquePointer!
+    //
+    // `mpvRenderContext` wraps the AO/VO (audio/video output) render state.
+    // It is created *after* the initial mpv handle and connects libmpv's
+    // rendering pipeline to our OpenGL context.
     var mpvRenderContext: OpaquePointer?
+    //
+    // OpenGL contexts are per-thread on macOS. We capture the context that was
+    // current when `mpvInitRendering` was called, and re-assert it (lock/set)
+    // around each `mpv_render_context_render()` call. See `lockAndSetOpenGLContext`.
     private var openGLContext: CGLContextObj! = nil
 
+    /// A dedicated background queue for the mpv event loop.
+    /// `userInteractive` QoS keeps scroll/grab events responsive.
+    /// Do NOT do heavy work on this queue — it feeds from libmpv continuously.
     private lazy var queue = DispatchQueue(label: "com.floatympv.controller", qos: .userInteractive)
 
     override init() {
@@ -38,17 +74,22 @@ class MPVController: NSObject, ObservableObject {
     }
 
     func mpvInit() {
+        // Step 1: create the libmpv handle. This allocates the internal engine.
         mpv = mpv_create()
         guard mpv != nil else {
             print("Failed to create mpv instance")
             return
         }
 
-        // Configure basic options
+        // Step 2: options guaranteed to be set *before* mpv_initialize().
+        // "vo" = video output driver. "libmpv" means mpv renders itself,
+        // leaving presentation to us via mpv_render_context_render().
         mpv_set_option_string(mpv, "vo", "libmpv")
-        mpv_set_option_string(mpv, "hwdec", "auto") // VideoToolbox hardware decoding on Mac
+        // hwdec = hardware decoding. On macOS this uses VideoToolbox for H.264/H.265.
+        mpv_set_option_string(mpv, "hwdec", "auto")
 
-        // Energy-efficient quality for floaty window
+        // Step 3: quality / battery tradeoffs tuned for a small floating window.
+        // See Architecture.md for rationale.
         mpv_set_option_string(mpv, "vd-lavc-threads", "0")        // auto decode threads
         mpv_set_option_string(mpv, "opengl-pbo", "yes")           // faster uploads
         mpv_set_option_string(mpv, "opengl-glfinish", "no")       // non-blocking
@@ -65,20 +106,31 @@ class MPVController: NSObject, ObservableObject {
         mpv_set_option_string(mpv, "linear-upscaling", "no")
         mpv_set_option_string(mpv, "video-latency-hacks", "yes")  // lower decode latency
 
-        // Set a custom function that should be called when there are new events.
+        // Step 4: register a C callback that libmpv will call when new events
+        // (property changes, end-of-file, etc.) are available.
+        //
+        // The callback receives `ctx`, the pointer we pass as the third argument.
+        // We pass `self` by converting it to a raw pointer with `mutableRawPointerOf`
+        // and back with `unsafeBitCast`. The lifetime is safe because mpv guarantees
+        // it tears the callback down before the controller is destroyed (see deinit).
         mpv_set_wakeup_callback(mpv, { (ctx) in
             guard let ctx = ctx else { return }
             let controller = unsafeBitCast(ctx, to: MPVController.self)
+            // Pump events on a background queue — expensive work, main thread stay clear.
             controller.readEvents()
         }, mutableRawPointerOf(obj: self))
 
-        // Initialize mpv core
+        // Step 5: finalize initialization. After this the engine is ready.
         let err = mpv_initialize(mpv)
         if err < 0 {
             print("Failed to initialize mpv: \(String(cString: mpv_error_string(err)))")
         }
 
-        // Observe essential properties
+        // Step 6: subscribe to mpv "properties" we want to observe.
+        // Whenever one changes, mpv emits a `MPV_EVENT_PROPERTY_CHANGE` event.
+        // We handle it in `handleEvent(_:)` and mirror the value into @Published.
+        //
+        // The `0` is the reply_userdata (unused here). Format tells libmpv the C type.
         mpv_observe_property(mpv, 0, "time-pos", MPV_FORMAT_DOUBLE)
         mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE)
         mpv_observe_property(mpv, 0, "pause", MPV_FORMAT_FLAG)
@@ -101,6 +153,22 @@ class MPVController: NSObject, ObservableObject {
         mpv_set_option_string(mpv, "vo", "libmpv")
     }
 
+    /// Creates the libmpv **render context** and connects it to our `ViewLayer`'s
+    /// OpenGL surface. This must be called *after* the layer has created its
+    /// `CGLContextObj` because the context must be current on this thread during
+    /// initialization.
+    ///
+    /// Key concepts:
+    ///   - `MPV_RENDER_PARAM_API_TYPE`: tells mpv we intend to use `"opengl"`.
+    ///   - `MPV_RENDER_PARAM_OPENGL_INIT_PARAMS`: says "use this function pointer
+    ///     lookup helper" (implemented in `MPVPointers.swift` as `mpvGetOpenGLFunc`)
+    ///     so libmpv can call `gl*` functions.
+    ///   - `MPV_RENDER_PARAM_ADVANCED_CONTROL`: 1 enables `mpv_render_context_render()`
+    ///     to be called from the same thread that owns the OpenGL context.
+    ///
+    /// After creation we install `mpvUpdateCallback`, which libmpv fires whenever
+    /// a new decoded frame is ready. The callback receives the `ViewLayer` pointer
+    /// and schedules a draw.
     func mpvInitRendering(layer: ViewLayer) {
         guard let mpv = mpv else {
             fatalError("mpvInitRendering() should be called after mpv handle being initialized!")
@@ -136,6 +204,12 @@ class MPVController: NSObject, ObservableObject {
         )
     }
 
+    // MARK: - OpenGL Context Safety
+    //
+    // On macOS, OpenGL is per-thread: a CGLContextObj is "current" on only one thread
+    // at a time. Before calling mpv_render_context_render() we lock the context
+    // and make it current; after rendering we unlock.
+    // See ViewLayer.draw for the matching lock/unlock pair.
     func lockAndSetOpenGLContext() {
         if let context = openGLContext {
             CGLLockContext(context)
@@ -161,6 +235,11 @@ class MPVController: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Frame / Render Sync
+    //
+    // Called by `ViewLayer.canDraw(...)`. Asks libmpv whether a new decoded frame
+    // has arrived since the last call. Returns true when `MPV_RENDER_UPDATE_FRAME`
+    // is set in the flags bitmask.
     func shouldRenderUpdateFrame() -> Bool {
         guard let context = mpvRenderContext else { return false }
         let flags = mpv_render_context_update(context)

@@ -4,6 +4,14 @@ import SwiftUI
 /// `WindowAccessor` is a `NSViewRepresentable` bridge used to access and configure
 /// the underlying macOS `NSWindow` object, providing fine-grained control
 /// over the window style (borderless, floating, etc.) that pure SwiftUI cannot offer.
+///
+/// It also enforces:
+///   - A minimum window size (280 x 180).
+///   - A maximum window size (589 x 360).
+///   - An aspect-ratio lock derived from the video's native resolution.
+///
+/// All styling is applied in `Coordinator.configure(window:aspectRatio:)`, which
+/// is called whenever the SwiftUI view is mounted or updated.
 struct WindowAccessor: NSViewRepresentable {
     static let minWindowSize = NSSize(width: 280, height: 180)
 

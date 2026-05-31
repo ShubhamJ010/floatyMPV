@@ -7,8 +7,16 @@ import Cocoa
 import OpenGL.GL
 import OpenGL.GL3
 
-/// Looks up an OpenGL function pointer by name via the OpenGL framework bundle.
-/// Required by mpv's OpenGL render context initialization.
+// MARK: - C Callbacks for libmpv
+
+/// Required by libmpv during render-context creation.
+///
+/// libmpv needs to call OpenGL functions like `glGenTextures`, `glBindTexture`,
+/// etc., but it does not link against OpenGL on its own. Instead it asks us for
+/// a function pointer by name, and we resolve it from the system OpenGL bundle.
+///
+/// This is essentially a manual "dynamic symbol lookup." macOS provides
+/// `CFBundleGetFunctionPointerForName` for exactly this use case.
 func mpvGetOpenGLFunc(_ ctx: UnsafeMutableRawPointer?, _ name: UnsafePointer<Int8>?) -> UnsafeMutableRawPointer? {
     let symbolName: CFString = CFStringCreateWithCString(kCFAllocatorDefault, name, kCFStringEncodingASCII)
     guard let addr = CFBundleGetFunctionPointerForName(

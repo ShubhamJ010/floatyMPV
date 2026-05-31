@@ -4,6 +4,15 @@ import AppKit
 ///
 /// Keeps the decision tree out of the view layer. Returns `true` when the
 /// event is consumed so the view can skip `super.keyDown`.
+///
+/// Keycodes used here are macOS hardware keycodes (not characters). For example:
+///   - `49` = Space bar
+///   - `123` = Left arrow
+///   - `126` = Up arrow
+///
+/// The `where mods == .control` pattern checks for the Control (⌃) modifier
+        /// held alongside the key.
+        /// The `where mods == .shift` pattern checks for Shift (⇧) held with the key.
 struct KeyboardShortcutHandler {
 
     static func handle(_ event: NSEvent, controller: MPVController, window: NSWindow) -> Bool {

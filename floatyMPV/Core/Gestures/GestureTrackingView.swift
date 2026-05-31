@@ -36,6 +36,24 @@ final class GestureTrackingView: NSView {
     private var recentScrollSamples: [ScrollSample] = []
     private var snapAnimationInFlight = false
 
+    // MARK: - State Glossary
+    //
+    // `pickupActive` — the window is currently being "held" by the user.
+    //   Entered by 2-finger trackpad touch OR by global scroll monitor.
+    //   Exited on mouse-up, touch-end, app-deactivate, or scroll phase end.
+    //
+    // `trackedTouches` — normalized positions of active touches. We use
+    //   `ObjectIdentifier` (stable identity across touch-moved events) so we
+    //   can correlate the same finger across multiple NSEvents.
+    //
+    // `pendingDropWorkItem` — debounces dropping pickup when the user lifts
+    //   exactly one finger after a 2-finger pickup. Prevents accidental drop
+    //   when the user is still transitioning from 2-finger → 1-finger.
+    //
+    // `mouseDragStartWindowFrame` / `mouseDragStartScreenPoint` — captured in
+    //   `mouseDown` so `mouseDragged` computes a delta relative to the original
+    //   click position. This avoids drift when the user moves fast.
+
     // MARK: - Display-Link Driven Smooth Scrolling
     /// Instead of calling `setFrame` on every scroll event (which causes jitter
     /// when events arrive faster than the display refresh), we accumulate deltas
@@ -152,7 +170,6 @@ final class GestureTrackingView: NSView {
         nextFrame.origin.y += dy
 
         window.setFrame(nextFrame, display: false, animate: false)
-        super.mouseDragged(with: event)
     }
 
     override func mouseUp(with event: NSEvent) {
