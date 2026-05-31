@@ -11,10 +11,14 @@ struct GestureSurface: NSViewRepresentable {
     /// `isPickedUp` state in `ContentView` without owning it.
     @Binding var isPickedUp: Bool
 
+    /// The playback controller passed through for keyboard shortcut dispatch.
+    let playerController: MPVController
+
     /// `makeNSView` is called by SwiftUI once to create the `NSView` instance.
     /// This is where we instantiate our custom AppKit view.
     func makeNSView(context: Context) -> GestureTrackingView {
         let view = GestureTrackingView()
+        view.playerController = playerController
 
         /// We define a closure (`onPickedUpChanged`) to receive callbacks
         /// from the AppKit view when the pickup state changes.
@@ -33,6 +37,7 @@ struct GestureSurface: NSViewRepresentable {
     /// view changes. It allows us to keep the underlying `NSView` in sync
     /// with the SwiftUI state.
     func updateNSView(_ nsView: GestureTrackingView, context: Context) {
+        nsView.playerController = playerController
         nsView.onPickedUpChanged = { pickedUp in
             DispatchQueue.main.async {
                 isPickedUp = pickedUp

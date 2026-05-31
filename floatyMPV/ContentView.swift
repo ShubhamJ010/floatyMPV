@@ -37,7 +37,7 @@ struct ContentView: View {
             y: isPickedUp || isTargeted ? 20 : 4
         )
         .background(WindowAccessor(aspectRatio: playerController.videoAspectRatio))
-        .overlay(GestureSurface(isPickedUp: $isPickedUp))
+        .overlay(GestureSurface(isPickedUp: $isPickedUp, playerController: playerController))
         .frame(
             minWidth: 280,
             idealWidth: 360,

@@ -12,6 +12,7 @@ class MPVController: NSObject, ObservableObject {
     @Published var duration: Double = 0.0
     @Published var isPaused: Bool = true
     @Published var volume: Double = 100.0
+    @Published var playbackSpeed: Double = 1.0
     @Published var videoWidth: Int = 0
     @Published var videoHeight: Int = 0
 
@@ -81,6 +82,7 @@ class MPVController: NSObject, ObservableObject {
         mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE)
         mpv_observe_property(mpv, 0, "pause", MPV_FORMAT_FLAG)
         mpv_observe_property(mpv, 0, "volume", MPV_FORMAT_DOUBLE)
+        mpv_observe_property(mpv, 0, "speed", MPV_FORMAT_DOUBLE)
         mpv_observe_property(mpv, 0, "dwidth", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "dheight", MPV_FORMAT_INT64)
     }
@@ -199,6 +201,43 @@ class MPVController: NSObject, ObservableObject {
         mpv_set_property(mpv, "volume", MPV_FORMAT_DOUBLE, &v)
     }
 
+    func seekRelative(_ seconds: Double) {
+        mpvCommand(["seek", String(seconds), "relative"])
+    }
+
+    func setSpeed(_ rate: Double) {
+        var r = rate
+        mpv_set_property(mpv, "speed", MPV_FORMAT_DOUBLE, &r)
+    }
+
+    func addVolume(_ delta: Double) {
+        mpvCommand(["add", "volume", String(delta)])
+    }
+
+    func frameStep() {
+        mpvCommand(["frame-step"])
+    }
+
+    func frameBackStep() {
+        mpvCommand(["frame-back-step"])
+    }
+
+    func screenshot() {
+        mpvCommand(["screenshot", "video"])
+    }
+
+    func playlistNext() {
+        mpvCommand(["playlist-next"])
+    }
+
+    func playlistPrevious() {
+        mpvCommand(["playlist-prev"])
+    }
+
+    func stop() {
+        mpvCommand(["stop"])
+    }
+
     private func readEvents() {
         queue.async { [weak self] in
             guard let self = self, let mpv = self.mpv else { return }
@@ -224,12 +263,14 @@ class MPVController: NSObject, ObservableObject {
             if prop.format == MPV_FORMAT_DOUBLE {
                 let val = prop.data.assumingMemoryBound(to: Double.self).pointee
                 DispatchQueue.main.async { [weak self] in
-                    if name == "time-pos" {
+                     if name == "time-pos" {
                         self?.currentTime = val
                     } else if name == "duration" {
                         self?.duration = val
                     } else if name == "volume" {
                         self?.volume = val
+                    } else if name == "speed" {
+                        self?.playbackSpeed = val
                     }
                 }
             } else if prop.format == MPV_FORMAT_FLAG {

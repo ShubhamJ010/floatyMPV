@@ -12,6 +12,9 @@ final class GestureTrackingView: NSView {
     /// It bridges the AppKit event world to the SwiftUI state world.
     var onPickedUpChanged: ((Bool) -> Void)?
 
+    /// The playback controller that keyboard shortcuts target.
+    var playerController: MPVController?
+
     private var trackedTouches: [ObjectIdentifier: NSPoint] = [:]
     private var lastCentroid: NSPoint?
     private var pickupActive = false
@@ -71,6 +74,13 @@ final class GestureTrackingView: NSView {
         installScrollMonitorsIfNeeded()
         installAppStateObserversIfNeeded()
         startDisplayLink()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            window?.makeFirstResponder(self)
+        }
     }
 
     deinit {
@@ -275,6 +285,19 @@ final class GestureTrackingView: NSView {
         pinchHitMinDuringCurrentGesture = false
         pinchHitMaxDuringCurrentGesture = false
         super.endGesture(with: event)
+    }
+
+    // MARK: - Keyboard Handling
+
+    override func keyDown(with event: NSEvent) {
+        guard let window, let controller = playerController else {
+            super.keyDown(with: event)
+            return
+        }
+        if KeyboardShortcutHandler.handle(event, controller: controller, window: window) {
+            return
+        }
+        super.keyDown(with: event)
     }
 
     // MARK: - Display Link (VSync-Aligned Frame Application)
