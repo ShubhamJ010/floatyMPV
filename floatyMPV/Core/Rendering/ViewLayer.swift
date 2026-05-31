@@ -148,6 +148,13 @@ class ViewLayer: CAOpenGLLayer {
         fatalError("init(coder:) has not been implemented")
     }
 
+    deinit {
+        // Release OpenGL resources when the layer is deallocated.
+        // This ensures proper cleanup even when the app quits from the dock.
+        CGLReleasePixelFormat(cglPixelFormat)
+        CGLReleaseContext(cglContext)
+    }
+
     /// Request a redraw on the next vsync-aligned frame.
     ///
     /// - `force == true`: sets the `forceDraw` flag so `canDraw` returns true

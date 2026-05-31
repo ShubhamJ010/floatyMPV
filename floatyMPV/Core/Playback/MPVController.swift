@@ -63,6 +63,9 @@ class MPVController: NSObject, ObservableObject {
     /// `userInteractive` QoS keeps scroll/grab events responsive.
     /// Do NOT do heavy work on this queue — it feeds from libmpv continuously.
     private lazy var queue = DispatchQueue(label: "com.floatympv.controller", qos: .userInteractive)
+    
+    /// Flag to signal the event loop to stop during shutdown.
+    @Atomic private var isShuttingDown = false
 
     override init() {
         super.init()
@@ -70,6 +73,13 @@ class MPVController: NSObject, ObservableObject {
     }
 
     deinit {
+        // Signal the event loop to stop
+        isShuttingDown = true
+        // Wait for any pending work to complete (up to 1 second timeout)
+        let semaphore = DispatchSemaphore(value: 0)
+        queue.async { semaphore.signal() }
+        _ = semaphore.wait(timeout: .now() + 1.0)
+        
         mpvUninitRendering()
     }
 
@@ -209,13 +219,28 @@ class MPVController: NSObject, ObservableObject {
     /// so the old `ViewLayer`'s OpenGL context is still alive and valid for cleanup.
     func uninitRendering() {
         guard let context = mpvRenderContext, let glContext = openGLContext else { return }
-        CGLLockContext(glContext)
-        CGLSetCurrentContext(glContext)
+        
+        // Attempt to lock and clear the rendering context. If the context is invalid
+        // (e.g., during app termination), we still proceed with cleanup but skip GL calls.
+        let lockResult = CGLLockContext(glContext)
+        defer {
+            if lockResult == kCGLNoError {
+                CGLUnlockContext(glContext)
+            }
+        }
+        
+        // Only set current context if lock succeeded
+        if lockResult == kCGLNoError {
+            CGLSetCurrentContext(glContext)
+        }
+        
+        // Unregister the update callback and free the rendering context.
+        // This is safe even if the GL context is invalid.
         mpv_render_context_set_update_callback(context, nil, nil)
         mpv_render_context_free(context)
+        
         mpvRenderContext = nil
         self.openGLContext = nil
-        CGLUnlockContext(glContext)
     }
 
     // MARK: - OpenGL Context Safety
@@ -224,23 +249,31 @@ class MPVController: NSObject, ObservableObject {
     // at a time. Before calling mpv_render_context_render() we lock the context
     // and make it current; after rendering we unlock.
     // See ViewLayer.draw for the matching lock/unlock pair.
+    private var contextLocked = false
+    
     func lockAndSetOpenGLContext() {
         if let context = openGLContext {
-            CGLLockContext(context)
-            CGLSetCurrentContext(context)
+            let result = CGLLockContext(context)
+            if result == kCGLNoError {
+                CGLSetCurrentContext(context)
+                contextLocked = true
+            }
         }
     }
 
     func unlockOpenGLContext() {
-        if let context = openGLContext {
+        if let context = openGLContext, contextLocked {
             CGLUnlockContext(context)
+            contextLocked = false
         }
     }
 
     func mpvUninitRendering() {
         uninitRendering()
         if mpv != nil {
-            mpv_destroy(mpv)
+            // Use mpv_terminate_destroy to gracefully shut down the event loop
+            // This is safer than mpv_destroy as it properly waits for pending operations
+            mpv_terminate_destroy(mpv)
             mpv = nil
         }
     }
@@ -332,11 +365,13 @@ class MPVController: NSObject, ObservableObject {
     private func readEvents() {
         queue.async { [weak self] in
             guard let self = self, let mpv = self.mpv else { return }
-            while true {
+            while !self.isShuttingDown {
                 let event = mpv_wait_event(mpv, 0)!
                 let eventId = event.pointee.event_id
                 if eventId == MPV_EVENT_NONE {
-                    break
+                    // No events available, briefly yield to avoid busy-waiting
+                    usleep(1000) // 1ms sleep
+                    continue
                 }
                 self.handleEvent(event)
                 if eventId == MPV_EVENT_SHUTDOWN {
