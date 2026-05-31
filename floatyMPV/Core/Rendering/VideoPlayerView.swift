@@ -17,4 +17,8 @@ struct VideoPlayerView: NSViewRepresentable {
     func updateNSView(_ nsView: VideoView, context: Context) {
         // Size updates and redraw requests are automatically handled by CAOpenGLLayer resizing masks.
     }
+
+    static func dismantleNSView(_ nsView: VideoView, coordinator: ()) {
+        nsView.playerController?.uninitRendering()
+    }
 }

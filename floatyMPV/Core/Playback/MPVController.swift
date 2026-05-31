@@ -204,6 +204,20 @@ class MPVController: NSObject, ObservableObject {
         )
     }
 
+    /// Frees only the mpv render context — does NOT destroy the mpv handle.
+    /// Called from `VideoPlayerView.dismantleNSView` when the view is removed,
+    /// so the old `ViewLayer`'s OpenGL context is still alive and valid for cleanup.
+    func uninitRendering() {
+        guard let context = mpvRenderContext, let glContext = openGLContext else { return }
+        CGLLockContext(glContext)
+        CGLSetCurrentContext(glContext)
+        mpv_render_context_set_update_callback(context, nil, nil)
+        mpv_render_context_free(context)
+        mpvRenderContext = nil
+        self.openGLContext = nil
+        CGLUnlockContext(glContext)
+    }
+
     // MARK: - OpenGL Context Safety
     //
     // On macOS, OpenGL is per-thread: a CGLContextObj is "current" on only one thread
@@ -224,11 +238,7 @@ class MPVController: NSObject, ObservableObject {
     }
 
     func mpvUninitRendering() {
-        guard let context = mpvRenderContext else { return }
-        mpv_render_context_set_update_callback(context, nil, nil)
-        mpv_render_context_free(context)
-        mpvRenderContext = nil
-
+        uninitRendering()
         if mpv != nil {
             mpv_destroy(mpv)
             mpv = nil
