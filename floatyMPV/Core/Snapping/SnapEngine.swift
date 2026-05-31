@@ -31,7 +31,7 @@ struct SnapEngine {
         static let settleDuration: TimeInterval = 0.52
     }
 
-    private enum Corner {
+    enum Corner {
         case topLeft
         case topRight
         case bottomLeft
@@ -157,6 +157,41 @@ struct SnapEngine {
         return frame
     }
 
+
+    /// Determines which screen corner a window frame is anchored to, if any.
+    /// Returns `nil` if the window is not close enough to any corner.
+    /// The tolerance threshold is 20 points from the ideal corner position.
+    static func anchoredCorner(for windowFrame: NSRect, in visibleFrame: NSRect) -> Corner? {
+        let inset = Config.cornerInset
+        let tolerance: CGFloat = 20.0
+
+        // The fixed corner point for each snapped position
+        let topLeftAnchor     = NSPoint(x: visibleFrame.minX + inset, y: visibleFrame.maxY - inset)
+        let topRightAnchor    = NSPoint(x: visibleFrame.maxX - inset, y: visibleFrame.maxY - inset)
+        let bottomLeftAnchor  = NSPoint(x: visibleFrame.minX + inset, y: visibleFrame.minY + inset)
+        let bottomRightAnchor = NSPoint(x: visibleFrame.maxX - inset, y: visibleFrame.minY + inset)
+
+        // The corresponding corner of the current window frame
+        let windowTopLeft     = NSPoint(x: windowFrame.minX, y: windowFrame.maxY)
+        let windowTopRight    = NSPoint(x: windowFrame.maxX, y: windowFrame.maxY)
+        let windowBottomLeft  = NSPoint(x: windowFrame.minX, y: windowFrame.minY)
+        let windowBottomRight = NSPoint(x: windowFrame.maxX, y: windowFrame.minY)
+
+        if hypot(windowTopLeft.x - topLeftAnchor.x, windowTopLeft.y - topLeftAnchor.y) < tolerance {
+            return .topLeft
+        }
+        if hypot(windowTopRight.x - topRightAnchor.x, windowTopRight.y - topRightAnchor.y) < tolerance {
+            return .topRight
+        }
+        if hypot(windowBottomLeft.x - bottomLeftAnchor.x, windowBottomLeft.y - bottomLeftAnchor.y) < tolerance {
+            return .bottomLeft
+        }
+        if hypot(windowBottomRight.x - bottomRightAnchor.x, windowBottomRight.y - bottomRightAnchor.y) < tolerance {
+            return .bottomRight
+        }
+
+        return nil
+    }
 
     private func squaredDistance(from point: NSPoint, to rect: NSRect) -> CGFloat {
         let clampedX = min(max(point.x, rect.minX), rect.maxX)

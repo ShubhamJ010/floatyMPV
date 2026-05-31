@@ -24,6 +24,7 @@ final class GestureTrackingView: NSView {
     private var pinchAccumulatedScale: CGFloat = 1.0
     private var pinchHitMinDuringCurrentGesture = false
     private var pinchHitMaxDuringCurrentGesture = false
+    private var pinchAnchorCorner: SnapEngine.Corner?
     private let pickupWindowScale: CGFloat = 1.0
     private var pendingDropWorkItem: DispatchWorkItem?
     private let pickupDropDebounce: TimeInterval = 0.08
@@ -250,6 +251,13 @@ final class GestureTrackingView: NSView {
             pinchAccumulatedScale = 1.0
             pinchHitMinDuringCurrentGesture = false
             pinchHitMaxDuringCurrentGesture = false
+            pinchAnchorCorner = {
+                let windowCenter = NSPoint(x: window.frame.midX, y: window.frame.midY)
+                let visibleFrame = NSScreen.screens.first(where: { $0.visibleFrame.contains(windowCenter) })?.visibleFrame
+                    ?? NSScreen.main?.visibleFrame
+                    ?? window.frame
+                return SnapEngine.anchoredCorner(for: window.frame, in: visibleFrame)
+            }()
         }
 
         guard let baseFrame = pinchBaseFrame, let baseCenter = pinchBaseCenter else { return }
@@ -289,7 +297,20 @@ final class GestureTrackingView: NSView {
 
         let nextWidth = baseFrame.width * scale
         let nextHeight = nextWidth / aspectRatio
-        let nextOrigin = NSPoint(x: baseCenter.x - (nextWidth / 2.0), y: baseCenter.y - (nextHeight / 2.0))
+
+        let nextOrigin: NSPoint
+        switch pinchAnchorCorner {
+        case .topLeft:
+            nextOrigin = NSPoint(x: baseFrame.minX, y: baseFrame.maxY - nextHeight)
+        case .topRight:
+            nextOrigin = NSPoint(x: baseFrame.maxX - nextWidth, y: baseFrame.maxY - nextHeight)
+        case .bottomLeft:
+            nextOrigin = NSPoint(x: baseFrame.minX, y: baseFrame.minY)
+        case .bottomRight:
+            nextOrigin = NSPoint(x: baseFrame.maxX - nextWidth, y: baseFrame.minY)
+        case nil:
+            nextOrigin = NSPoint(x: baseCenter.x - (nextWidth / 2.0), y: baseCenter.y - (nextHeight / 2.0))
+        }
         let nextFrame = NSRect(origin: nextOrigin, size: NSSize(width: nextWidth, height: nextHeight))
 
         window.setFrame(nextFrame, display: false, animate: false)
@@ -301,6 +322,7 @@ final class GestureTrackingView: NSView {
         pinchAccumulatedScale = 1.0
         pinchHitMinDuringCurrentGesture = false
         pinchHitMaxDuringCurrentGesture = false
+        pinchAnchorCorner = nil
         super.endGesture(with: event)
     }
 
@@ -528,6 +550,7 @@ final class GestureTrackingView: NSView {
         pinchAccumulatedScale = 1.0
         pinchHitMinDuringCurrentGesture = false
         pinchHitMaxDuringCurrentGesture = false
+        pinchAnchorCorner = nil
         displayLinkLock.lock()
         pendingScrollDelta = .zero
         displayLinkLock.unlock()
