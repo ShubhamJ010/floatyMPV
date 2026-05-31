@@ -55,17 +55,6 @@ final class GestureTrackingView: NSView {
     //   `mouseDown` so `mouseDragged` computes a delta relative to the original
     //   click position. This avoids drift when the user moves fast.
 
-    // MARK: - Display-Link Driven Smooth Scrolling
-    /// Instead of calling `setFrame` on every scroll event (which causes jitter
-    /// when events arrive faster than the display refresh), we accumulate deltas
-    /// and apply them at vsync-aligned intervals via CVDisplayLink.
-    private var displayLink: CVDisplayLink?
-    private var pendingScrollDelta: CGPoint = .zero
-    private var accumulatedScrollDelta: CGPoint = .zero  // for interpolation
-    private let smoothingFactor: CGFloat = 0.4
-    private let displayLinkLock = NSLock()
-    private var displayLinkActive = false
-    private var isDraggingWithScroll = false
 
     /// `acceptsFirstResponder` must return `true` to enable the view to receive
     /// mouse events and keyboard input.
@@ -82,7 +71,6 @@ final class GestureTrackingView: NSView {
 
         installScrollMonitorsIfNeeded()
         installAppStateObserversIfNeeded()
-        startDisplayLink()
     }
 
     required init?(coder: NSCoder) {
@@ -92,7 +80,6 @@ final class GestureTrackingView: NSView {
         wantsRestingTouches = true
         installScrollMonitorsIfNeeded()
         installAppStateObserversIfNeeded()
-        startDisplayLink()
     }
 
     override func viewDidMoveToWindow() {
@@ -104,7 +91,6 @@ final class GestureTrackingView: NSView {
 
     deinit {
         cancelPendingDrop()
-        stopDisplayLink()
         removeScrollMonitors()
         removeAppStateObservers()
         showCursorIfNeeded()
@@ -209,7 +195,6 @@ final class GestureTrackingView: NSView {
         guard pickupActive else { return false }
 
         if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-            isDraggingWithScroll = false
             maybeSnapWindowFromRecentSwipe(window: window)
             resetPickupState(reason: "phase-end-\(source)")
             return true
@@ -221,18 +206,13 @@ final class GestureTrackingView: NSView {
 
         if abs(dx) < 0.01 && abs(dy) < 0.01 { return true }
 
-        // Accumulate scroll delta for display-link driven application.
-        // We use a weighted average with previous pending delta to smooth out
-        // micro-jitter from the trackpad hardware.
-        isDraggingWithScroll = true
         let rawDelta = CGPoint(x: dx, y: -dy)
-        displayLinkLock.lock()
-        // Exponential smoothing on the accumulated delta
-        pendingScrollDelta.x = pendingScrollDelta.x * smoothingFactor + rawDelta.x * (1 - smoothingFactor)
-        pendingScrollDelta.y = pendingScrollDelta.y * smoothingFactor + rawDelta.y * (1 - smoothingFactor)
-        displayLinkLock.unlock()
-
         recordScrollSample(dx: rawDelta.x, dy: rawDelta.y)
+
+        var nextFrame = window.frame
+        nextFrame.origin.x += rawDelta.x
+        nextFrame.origin.y += rawDelta.y
+        window.setFrame(nextFrame, display: false, animate: false)
 
         return true
     }
@@ -339,57 +319,6 @@ final class GestureTrackingView: NSView {
         super.keyDown(with: event)
     }
 
-    // MARK: - Display Link (VSync-Aligned Frame Application)
-
-    private func startDisplayLink() {
-        CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
-        guard let displayLink else { return }
-
-        let displayLinkOutput: CVDisplayLinkOutputCallback = { (displayLink, inNow, inOutputTime, flagsIn, flagsOut, displayLinkContext) -> CVReturn in
-            let view = Unmanaged<GestureTrackingView>.fromOpaque(displayLinkContext!).takeUnretainedValue()
-            view.tickPendingScroll()
-            return kCVReturnSuccess
-        }
-
-        CVDisplayLinkSetOutputCallback(displayLink, displayLinkOutput, Unmanaged.passUnretained(self).toOpaque())
-        CVDisplayLinkStart(displayLink)
-        displayLinkActive = true
-    }
-
-    private func stopDisplayLink() {
-        guard let displayLink = displayLink, displayLinkActive else { return }
-        CVDisplayLinkStop(displayLink)
-        displayLinkActive = false
-    }
-
-    /// Called on CVDisplayLink thread at vsync rate.
-    /// Applies the smoothed pending scroll delta to the window frame.
-    private func tickPendingScroll() {
-        guard isDraggingWithScroll, pickupActive else {
-            displayLinkLock.lock()
-            pendingScrollDelta = .zero
-            displayLinkLock.unlock()
-            return
-        }
-
-        displayLinkLock.lock()
-        let delta = pendingScrollDelta
-        if abs(delta.x) < 0.001 && abs(delta.y) < 0.001 {
-            pendingScrollDelta = .zero
-            displayLinkLock.unlock()
-            return
-        }
-        pendingScrollDelta = .zero
-        displayLinkLock.unlock()
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.pickupActive, let window = self.window else { return }
-            var nextFrame = window.frame
-            nextFrame.origin.x += delta.x
-            nextFrame.origin.y += delta.y
-            window.setFrame(nextFrame, display: false, animate: false)
-        }
-    }
 
     // MARK: - State Management
 
@@ -431,7 +360,6 @@ final class GestureTrackingView: NSView {
         pickupActive = active
         if !active {
             recentScrollSamples.removeAll(keepingCapacity: true)
-            isDraggingWithScroll = false
         }
         applyPickupWindowScale(active: active)
         if active {
@@ -540,7 +468,6 @@ final class GestureTrackingView: NSView {
         cancelPendingDrop()
         recentScrollSamples.removeAll(keepingCapacity: true)
         trackedTouches.removeAll()
-        isDraggingWithScroll = false
         setPickup(active: false)
         mouseDragStartWindowFrame = nil
         mouseDragStartScreenPoint = nil
@@ -551,9 +478,6 @@ final class GestureTrackingView: NSView {
         pinchHitMinDuringCurrentGesture = false
         pinchHitMaxDuringCurrentGesture = false
         pinchAnchorCorner = nil
-        displayLinkLock.lock()
-        pendingScrollDelta = .zero
-        displayLinkLock.unlock()
     }
 
     private func recordScrollSample(dx: CGFloat, dy: CGFloat) {

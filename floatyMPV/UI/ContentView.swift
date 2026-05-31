@@ -22,7 +22,7 @@ struct ContentView: View {
                 .scaleEffect(isTargeted ? 1.02 : 1.0)
             
             if playerController.hasActiveFile {
-                VideoPlayerView(playerController: playerController)
+                VideoPlayerView(playerController: playerController, isGestureMoving: isPickedUp)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
                 /// Visual indicator for the drop zone.

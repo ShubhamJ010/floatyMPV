@@ -59,6 +59,10 @@ class ViewLayer: CAOpenGLLayer {
     /// force a paint after `update(force: true)` (used during live resize).
     @Atomic private var forceDraw = false
 
+    /// Tracks whether the window is currently being moved via gesture.
+    /// When true, we temporarily suspend rendering to eliminate lock contention.
+    @Atomic var isGestureMoving = false
+
     /// Tracks whether the window is mid-resize. While live-resizing we push
     /// redraws aggressively so the video does not freeze at the wrong size.
     @Atomic var inLiveResize: Bool = false {
@@ -171,6 +175,9 @@ class ViewLayer: CAOpenGLLayer {
     ///   - A forced draw is pending (live resize, launch, etc.), or
     ///   - `shouldRenderUpdateFrame()` reports a new decoded frame from libmpv.
     override func canDraw(inCGLContext ctx: CGLContextObj, pixelFormat pf: CGLPixelFormatObj, forLayerTime t: CFTimeInterval, displayTime ts: UnsafePointer<CVTimeStamp>?) -> Bool {
+        if isGestureMoving {
+            return false
+        }
         guard let controller = videoView?.playerController else { return false }
         let shouldDraw = forceDraw || controller.shouldRenderUpdateFrame()
         return shouldDraw
