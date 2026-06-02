@@ -21,6 +21,12 @@ jobs:
         with:
           xcode-version: '26.3.0'
 
+      - name: Install libmpv
+        # Bridging header imports <mpv/client.h>; the project's header search
+        # path expects /opt/homebrew/include, so install via Homebrew.
+        run: |
+          brew install mpv
+
       - name: Resolve Package Dependencies
         run: |
           xcodebuild -resolvePackageDependencies
