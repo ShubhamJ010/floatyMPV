@@ -59,12 +59,15 @@ struct SnapEngine {
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.90, 0.30, 1.0)
             window.animator().setFrame(overshootFrame, display: false)
         } completionHandler: {
+            // Unfreeze rendering immediately when the glide phase ends and the window
+            // arrives at the corner. The subsequent settle phase is tiny (5pt) and
+            // slow, so we can render normally during it without causing jitter.
+            completion()
+            
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = Config.settleDuration
                 context.timingFunction = CAMediaTimingFunction(controlPoints: 0.20, 0.88, 0.28, 1.0)
                 window.animator().setFrame(targetFrame, display: false)
-            } completionHandler: {
-                completion()
             }
         }
     }
