@@ -97,10 +97,20 @@ class MPVController: NSObject, ObservableObject {
         mpv_set_option_string(mpv, "vo", "libmpv")
         // hwdec = hardware decoding. On macOS this uses VideoToolbox for H.264/H.265.
         mpv_set_option_string(mpv, "hwdec", "auto")
+        // Keep the player active (idle) instead of quitting when there is no file playing.
+        mpv_set_option_string(mpv, "idle", "yes")
 
         // Step 3: quality / battery tradeoffs tuned for a small floating window.
         // See Architecture.md for rationale.
-        mpv_set_option_string(mpv, "vd-lavc-threads", "0")        // auto decode threads
+        //
+        // `vd-lavc-threads=2` caps decode parallelism. The default ("0" = auto)
+        // can spawn ~8 threads for a 4K stream, which is wasted parallelism for
+        // a ≤589×360 window — 2 threads keep latency low without thrashing
+        // the GPU upload queue.
+        mpv_set_option_string(mpv, "vd-lavc-threads", "2")
+        // `vd-lavc-dr=yes` lets the decoder write directly into GPU-backed
+        // texture memory, eliminating the intermediate CPU copy before upload.
+        mpv_set_option_string(mpv, "vd-lavc-dr", "yes")
         mpv_set_option_string(mpv, "opengl-pbo", "yes")           // faster uploads
         mpv_set_option_string(mpv, "opengl-glfinish", "no")       // non-blocking
         mpv_set_option_string(mpv, "framedrop", "vo")             // drop render frames
@@ -115,6 +125,16 @@ class MPVController: NSObject, ObservableObject {
         mpv_set_option_string(mpv, "linear-downscaling", "no")
         mpv_set_option_string(mpv, "linear-upscaling", "no")
         mpv_set_option_string(mpv, "video-latency-hacks", "yes")  // lower decode latency
+        // Tie frame presentation to the audio clock. Avoids the display-sync
+        // micro-jitter that hurts when the window is small and constantly
+        // being repositioned.
+        mpv_set_option_string(mpv, "video-sync", "audio")
+        // Downscale the frame in the decode pipeline so the GPU never uploads
+        // more pixels than the window can show. Cap to 640px wide (slightly
+        // above the 589px max window width) — for a 4K source this is a ~9×
+        // reduction in upload bandwidth. `-2` preserves aspect ratio rounded
+        // to an even height (libavfilter requirement).
+        mpv_set_option_string(mpv, "vf", "lavfi=[scale=640:-2:flags=fast_bilinear]")
 
         // Step 4: register a C callback that libmpv will call when new events
         // (property changes, end-of-file, etc.) are available.
@@ -148,6 +168,7 @@ class MPVController: NSObject, ObservableObject {
         mpv_observe_property(mpv, 0, "speed", MPV_FORMAT_DOUBLE)
         mpv_observe_property(mpv, 0, "dwidth", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "dheight", MPV_FORMAT_INT64)
+        mpv_observe_property(mpv, 0, "idle-active", MPV_FORMAT_FLAG)
     }
 
     /// Call this when the window size changes to adapt video quality.
@@ -384,15 +405,12 @@ class MPVController: NSObject, ObservableObject {
     private func handleEvent(_ event: UnsafePointer<mpv_event>) {
         switch event.pointee.event_id {
         case MPV_EVENT_END_FILE:
-            mpvCommand(["playlist-clear"])
-            DispatchQueue.main.async { [weak self] in
-                self?.hasActiveFile = false
-            }
+            break
         case MPV_EVENT_PROPERTY_CHANGE:
             let prop = event.pointee.data.assumingMemoryBound(to: mpv_event_property.self).pointee
             let name = String(cString: prop.name)
-            if prop.format == MPV_FORMAT_DOUBLE {
-                let val = prop.data.assumingMemoryBound(to: Double.self).pointee
+            if prop.format == MPV_FORMAT_DOUBLE, let data = prop.data {
+                let val = data.assumingMemoryBound(to: Double.self).pointee
                 DispatchQueue.main.async { [weak self] in
                      if name == "time-pos" {
                         self?.currentTime = val
@@ -404,15 +422,20 @@ class MPVController: NSObject, ObservableObject {
                         self?.playbackSpeed = val
                     }
                 }
-            } else if prop.format == MPV_FORMAT_FLAG {
-                let val = prop.data.assumingMemoryBound(to: CInt.self).pointee != 0
+            } else if prop.format == MPV_FORMAT_FLAG, let data = prop.data {
+                let val = data.assumingMemoryBound(to: CInt.self).pointee != 0
                 DispatchQueue.main.async { [weak self] in
                     if name == "pause" {
                         self?.isPaused = val
+                    } else if name == "idle-active" {
+                        self?.hasActiveFile = !val
+                        if val {
+                            self?.mpvCommand(["playlist-clear"])
+                        }
                     }
                 }
-            } else if prop.format == MPV_FORMAT_INT64 {
-                let val = prop.data.assumingMemoryBound(to: Int64.self).pointee
+            } else if prop.format == MPV_FORMAT_INT64, let data = prop.data {
+                let val = data.assumingMemoryBound(to: Int64.self).pointee
                 DispatchQueue.main.async { [weak self] in
                     if name == "dwidth" {
                         self?.videoWidth = Int(val)

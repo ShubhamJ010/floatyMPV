@@ -11,6 +11,10 @@ struct GestureSurface: NSViewRepresentable {
     /// `isPickedUp` state in `ContentView` without owning it.
     @Binding var isPickedUp: Bool
 
+    /// Mirrors `GestureTrackingView.onSnapAnimatingChanged` into SwiftUI so
+    /// the renderer layer can suspend drawing during the corner-snap glide.
+    @Binding var isSnapAnimating: Bool
+
     /// The playback controller passed through for keyboard shortcut dispatch.
     let playerController: MPVController
 
@@ -19,17 +23,7 @@ struct GestureSurface: NSViewRepresentable {
     func makeNSView(context: Context) -> GestureTrackingView {
         let view = GestureTrackingView()
         view.playerController = playerController
-
-        /// We define a closure (`onPickedUpChanged`) to receive callbacks
-        /// from the AppKit view when the pickup state changes.
-        view.onPickedUpChanged = { pickedUp in
-            /// `DispatchQueue.main.async` ensures that updates to the
-            /// `@Binding` state happen on the main thread, which is required
-            /// for UI updates in SwiftUI to avoid thread-safety issues.
-            DispatchQueue.main.async {
-                isPickedUp = pickedUp
-            }
-        }
+        attachClosures(to: view)
         return view
     }
 
@@ -38,9 +32,21 @@ struct GestureSurface: NSViewRepresentable {
     /// with the SwiftUI state.
     func updateNSView(_ nsView: GestureTrackingView, context: Context) {
         nsView.playerController = playerController
-        nsView.onPickedUpChanged = { pickedUp in
+        attachClosures(to: nsView)
+    }
+
+    /// Wires up the AppKit → SwiftUI callbacks. All state mutations are
+    /// dispatched to the main thread to satisfy SwiftUI's thread safety
+    /// requirements.
+    private func attachClosures(to view: GestureTrackingView) {
+        view.onPickedUpChanged = { pickedUp in
             DispatchQueue.main.async {
                 isPickedUp = pickedUp
+            }
+        }
+        view.onSnapAnimatingChanged = { animating in
+            DispatchQueue.main.async {
+                isSnapAnimating = animating
             }
         }
     }

@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var playerController = MPVController()
     @State private var isPickedUp = false
+    @State private var isSnapAnimating = false
     @State private var isTargeted = false
     var body: some View {
         ZStack {
@@ -22,8 +23,23 @@ struct ContentView: View {
                 .scaleEffect(isTargeted ? 1.02 : 1.0)
             
             if playerController.hasActiveFile {
-                VideoPlayerView(playerController: playerController, isGestureMoving: isPickedUp)
+                VideoPlayerView(
+                    playerController: playerController,
+                    isGestureMoving: isPickedUp,
+                    isSnapAnimating: isSnapAnimating
+                )
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    /// Cosmetic Gaussian blur when the renderer is frozen.
+                    ///
+                    /// `ViewLayer.canDraw` returns `false` while `isGestureMoving` or
+                    /// `isSnapAnimating` is true, so the last decoded frame stays on
+                    /// screen with no new frames arriving. Softening that frozen frame
+                    /// makes the freeze feel intentional — a settling visual — rather
+                    /// than a glitch. SwiftUI composites the AppKit-rendered output
+                    /// through this filter, so it does not touch the GL pipeline.
+                    .blur(radius: (isPickedUp) ? 6 : 0)
+                    .animation(.easeInOut(duration: 0.2), value: isPickedUp)
+                    .animation(.easeInOut(duration: 0.2), value: isSnapAnimating)
             } else {
                 /// Visual indicator for the drop zone.
                 DropZoneOverlay(isTargeted: isTargeted)
@@ -35,8 +51,13 @@ struct ContentView: View {
             radius: isPickedUp || isTargeted ? 30 : 10,
             y: isPickedUp || isTargeted ? 20 : 4
         )
-        .background(WindowAccessor(aspectRatio: playerController.videoAspectRatio))
-        .overlay(GestureSurface(isPickedUp: $isPickedUp, playerController: playerController))
+        .overlay(
+            GestureSurface(
+                isPickedUp: $isPickedUp,
+                isSnapAnimating: $isSnapAnimating,
+                playerController: playerController
+            )
+        )
         .frame(
             minWidth: 280,
             idealWidth: 360,
@@ -48,6 +69,16 @@ struct ContentView: View {
         /// Register as a drop destination for file URLs.
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             handleDrop(providers: providers)
+        }
+        /// Forward aspect-ratio changes to `MainWindowController`, which owns
+        /// the `FloatingPanel` and applies the aspect-ratio lock + resize
+        /// clamp. SwiftUI cannot reach the AppKit-owned panel directly.
+        .onChange(of: playerController.videoAspectRatio) { _, newRatio in
+            NotificationCenter.default.post(
+                name: .videoAspectRatioChanged,
+                object: nil,
+                userInfo: [Notification.aspectRatioKey: newRatio]
+            )
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isPickedUp)
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isTargeted)

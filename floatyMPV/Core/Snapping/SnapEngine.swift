@@ -27,7 +27,7 @@ struct SnapEngine {
         static let cornerInset: CGFloat = 16
         static let velocityWindow: CFTimeInterval = 0.10
         static let overshootDistance: CGFloat = 8
-        static let glideDuration: TimeInterval = 0.62
+        static let glideDuration: TimeInterval = 0.58
         static let settleDuration: TimeInterval = 0.52
     }
 
@@ -49,17 +49,25 @@ struct SnapEngine {
         let targetFrame = targetFrame(for: window.frame, in: visibleFrame, corner: corner)
         let overshootFrame = overshootFrame(from: window.frame, target: targetFrame)
 
+        // `display: false` is intentional: the GL renderer is suspended for the
+        // duration of this animation (see ViewLayer.isSnapAnimating), and the
+        // compositor slides the last-painted frame to the new origin. Asking
+        // for `display: true` here would force a repaint per animation tick
+        // and reintroduce the CGL lock contention we just eliminated.
         NSAnimationContext.runAnimationGroup { context in
             context.duration = Config.glideDuration
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.90, 0.30, 1.0)
-            window.animator().setFrame(overshootFrame, display: true)
+            window.animator().setFrame(overshootFrame, display: false)
         } completionHandler: {
+            // Unfreeze rendering immediately when the glide phase ends and the window
+            // arrives at the corner. The subsequent settle phase is tiny (5pt) and
+            // slow, so we can render normally during it without causing jitter.
+            completion()
+            
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = Config.settleDuration
                 context.timingFunction = CAMediaTimingFunction(controlPoints: 0.20, 0.88, 0.28, 1.0)
-                window.animator().setFrame(targetFrame, display: true)
-            } completionHandler: {
-                completion()
+                window.animator().setFrame(targetFrame, display: false)
             }
         }
     }

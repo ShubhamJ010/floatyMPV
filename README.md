@@ -1,6 +1,76 @@
 # FloatyMPV
 
-Native macOS PiP-style video player built with AppKit and `libmpv`.
+Native macOS floating video player inspired by Arc Browser PiP and the system Picture-in-Picture experience — built with AppKit and `libmpv`.
+
+FloatyMPV is a lightweight always-on-top floating video player for macOS designed to stay out of your way while keeping videos instantly accessible anywhere on your desktop.
+
+Drop a video file into the window and it immediately plays inside a compact draggable PiP-style overlay with smooth native animations, magnetic snapping, hardware-accelerated playback, and zero Electron overhead.
+
+Unlike traditional media players, FloatyMPV is focused on a minimal distraction-free floating experience similar to Arc Browser mini player / macOS PiP behavior:
+- small floating window
+- smooth drag interactions
+- native-feeling motion
+- always visible
+- fast startup
+- low memory usage
+- optimized for multitasking
+
+Built entirely with native macOS technologies including AppKit, SwiftUI, OpenGL, Core Animation, and `libmpv`.
+
+---
+
+## Inspiration
+
+This project would not have been realistically possible without the incredible work done by the IINA macOS player and the broader mpv ecosystem.
+
+A huge amount of rendering knowledge, playback behavior, macOS integration patterns, and `libmpv` implementation details were learned by studying IINA and related open-source projects.
+
+Massive respect and thanks to:
+- IINA
+- mpv
+
+---
+
+## Disclosure
+
+This is primarily a learning and experimentation project.
+
+Heavy use of AI-assisted development workflows and Codex-style agentic coding tools were used during development.
+
+The project is heavily focused on exploring:
+- native macOS windowing
+- OpenGL rendering
+- `libmpv` integration
+- gesture systems
+- floating utility app architecture
+- playback optimization
+- smooth native-feeling interactions
+
+Expect architectural experimentation, refactors, and rough edges.
+
+---
+
+## Philosophy
+
+FloatyMPV intentionally prioritizes:
+- responsiveness
+- low resource usage
+- native macOS behavior
+- smooth animations
+- simplicity
+- keyboard-first interactions
+
+over:
+- bloated feature sets
+- plugin ecosystems
+- Electron wrappers
+- Chromium-based UI layers
+
+The target experience is simple:
+
+> Open video → drag anywhere → continue working.
+
+---
 
 ## What this project is
 
@@ -59,7 +129,8 @@ The app follows a domain-oriented architecture with clear ownership boundaries:
 ```text
 floatyMPV/
 ├── App/                          # Application lifecycle & entry point
-│   └── floatyMPVApp.swift
+│   ├── floatyMPVApp.swift
+│   └── MainWindowController.swift  # Owns the FloatingPanel + hosts ContentView
 ├── Core/                         # Domain subsystems (no UI dependency)
 │   ├── Playback/                 # mpv lifecycle, commands, events
 │   │   └── MPVController.swift
@@ -71,7 +142,7 @@ floatyMPV/
 │   │   ├── GestureSurface.swift      # SwiftUI→AppKit bridge
 │   │   └── GestureTrackingView.swift # NSResponder gesture handling
 │   ├── Windowing/                # NSWindow setup, resize, aspect ratio
-│   │   └── WindowAccessor.swift
+│   │   └── FloatingPanel.swift   # NSPanel subclass (opt-out of Accessibility)
 │   ├── Snapping/                 # Magnetic corner snap (geometry only)
 │   │   └── SnapEngine.swift
 │   └── Shortcuts/                # Keyboard shortcut mapping (pure logic)
@@ -115,11 +186,12 @@ Workflow rules live in [`AGENTS.md`](./AGENTS.md). Read that before touching cod
 
 ## Current Architecture
 
-The app uses a hybrid SwiftUI/AppKit architecture with `NSViewRepresentable` bridges for every non-SwiftUI surface:
+The app uses a hybrid SwiftUI/AppKit architecture. The window is owned by AppKit (so we can subclass `NSPanel` and opt out of the Accessibility tree); the rest of the UI is SwiftUI hosted inside that panel via `NSHostingController`:
 
-- `App/floatyMPVApp.swift` — `@main` entry point
-- `UI/ContentView.swift` — SwiftUI composition and local UI state, drop handling
-- `Core/Windowing/WindowAccessor.swift` — `NSWindow` setup (borderless, floating, aspect-ratio clamping)
+- `App/floatyMPVApp.swift` — `@main` entry point, sets `.accessory` activation policy, instantiates `MainWindowController`
+- `App/MainWindowController.swift` — `NSWindowController` that owns the `FloatingPanel`, hosts `ContentView` via `NSHostingController`, applies aspect-ratio lock and resize clamp
+- `UI/ContentView.swift` — SwiftUI composition and local UI state, drop handling, posts `.videoAspectRatioChanged` for the controller to react to
+- `Core/Windowing/FloatingPanel.swift` — `NSPanel` subclass with `NSAccessibility` opt-out (see "Window management" below)
 - `Core/Gestures/GestureSurface.swift` — SwiftUI bridge to the gesture surface
 - `Core/Gestures/GestureTrackingView.swift` — touch, scroll, pinch, cursor, keyboard
 - `Core/Shortcuts/KeyboardShortcutHandler.swift` — key-to-command mapping
@@ -128,6 +200,34 @@ The app uses a hybrid SwiftUI/AppKit architecture with `NSViewRepresentable` bri
 - `Core/Snapping/SnapEngine.swift` — magnetic corner snap (extracted from gesture layer)
 - `Utilities/Concurrency/Atomic.swift` — thread-safe property wrapper
 - `Utilities/Extensions/MPVPointers.swift` — C interop helpers
+
+## Window management
+
+The player is a borderless, accessory-app floating panel. The visible behavior is "Mac native PiP" — no Dock icon, no menu bar, always above other windows — and the window is **invisible to third-party window managers** (Swish, Magnet, Rectangle, Moom, Hammerspoon, yabai, AeroSpace).
+
+### Why a custom `NSPanel`
+
+SwiftUI's `WindowGroup` creates an internal `NSWindow` subclass we can't override. That class auto-generates an `AXWindow` accessibility node containing `kAXPositionAttribute` and `kAXSizeAttribute`, which is exactly what window managers read and write to move windows. To opt out of the accessibility tree, the window has to be a class we own.
+
+`FloatingPanel` is an `NSPanel` subclass with five `NSAccessibility` overrides:
+
+```swift
+override func accessibilityAttributeNames() -> [NSAccessibility.Attribute] { return [] }
+override func accessibilityAttributeValue(_ attribute: NSAccessibility.Attribute) -> Any? { return nil }
+override func accessibilityIsAttributeSettable(_ attribute: NSAccessibility.Attribute) -> Bool { return false }
+override func accessibilityIsIgnored() -> Bool { return true }
+override func accessibilityHitTest(_ point: NSPoint) -> Any? { return nil }
+```
+
+`AXUIElementSetAttributeValue(window, kAXPositionAttribute, …)` now returns an error because the attribute isn't there to set, and the window managers skip the panel.
+
+### Activation & lifecycle
+
+`AppDelegate.applicationWillFinishLaunching` calls `NSApp.setActivationPolicy(.accessory)` so the process has no Dock entry and no menu bar. `applicationDidFinishLaunching` instantiates `MainWindowController` and then `NSApp.activate(ignoringOtherApps: true)` — this single activation makes the `FloatingPanel` the key window so it can receive drag-and-drop, clicks, and the keyboard shortcut chain (Space, arrows, `Q`, `⇧S`, …) routed through `GestureTrackingView.keyDown(with:)`.
+
+### Trade-off
+
+`NSAccessibility` opt-out means VoiceOver / Voice Control / Switch Control will not see this window. In-app input, mouse, drag-and-drop, and the `GestureTrackingView` responder chain are all unaffected.
 
 ## MPV Configuration
 
@@ -236,3 +336,7 @@ All shortcuts are handled by `GestureTrackingView.keyDown(with:)` which delegate
 A working prototype exists with a borderless floating AppKit window, magnetic corner snapping, `libmpv` OpenGL playback, keyboard shortcuts, and drag-and-drop file loading.
 
 The current focus is stabilizing gesture interactions and refining window behavior before adding overlay controls or streaming support.
+
+## Recent changes
+
+- **2026-06-03** — Window-management rewrite. Replaced the SwiftUI `WindowGroup { ContentView() }` + `WindowAccessor` bridge with an AppKit-owned `FloatingPanel` (`NSPanel` subclass) hosted in `MainWindowController`. The panel opts out of the macOS Accessibility tree (`accessibilityAttributeNames → []`, `accessibilityIsIgnored → true`, etc.) so third-party window managers (Swish, Magnet, Rectangle, Moom, Hammerspoon, yabai) can no longer move or resize the window. The app also runs as a true `.accessory` — no Dock icon, no menu bar, not in ⌘+Tab — matching the system PiP behavior. Window setup moved from `Core/Windowing/WindowAccessor.swift` (deleted) to `Core/Windowing/FloatingPanel.swift` (NSPanel subclass) and `App/MainWindowController.swift` (NSWindowController + SwiftUI host).
