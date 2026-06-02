@@ -359,12 +359,12 @@ class MPVController: NSObject, ObservableObject {
         mpvCommand(["add", "volume", String(delta)])
     }
 
-    func frameStep() {
-        mpvCommand(["frame-step"])
+    func toggleMute() {
+        mpvCommand(["cycle", "mute"])
     }
 
-    func frameBackStep() {
-        mpvCommand(["frame-back-step"])
+    func toggleSubtitles() {
+        mpvCommand(["cycle", "sub-visibility"])
     }
 
     func screenshot() {

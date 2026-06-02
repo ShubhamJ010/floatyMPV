@@ -7,12 +7,9 @@ import AppKit
 ///
 /// Keycodes used here are macOS hardware keycodes (not characters). For example:
 ///   - `49` = Space bar
-///   - `123` = Left arrow
-///   - `126` = Up arrow
+///   - `38` = J
 ///
-/// The `where mods == .control` pattern checks for the Control (⌃) modifier
-        /// held alongside the key.
-        /// The `where mods == .shift` pattern checks for Shift (⇧) held with the key.
+/// The `where mods == .shift` pattern checks for Shift (⇧) held with the key.
 struct KeyboardShortcutHandler {
 
     static func handle(_ event: NSEvent, controller: MPVController, window: NSWindow) -> Bool {
@@ -29,31 +26,30 @@ struct KeyboardShortcutHandler {
 
         // ── Seek ──────────────────────────────────────────────────
 
-        case 123 where mods.isEmpty:         // ←   -5s
-            controller.seekRelative(-5); return true
-        case 124 where mods.isEmpty:         // →   +5s
-            controller.seekRelative(5); return true
+        case 38 where mods.isEmpty:          // J   -30s
+            controller.seekRelative(-30); return true
+        case 40 where mods.isEmpty:          // K   +30s
+            controller.seekRelative(30); return true
         case 6 where mods.isEmpty:           // Z   -3s
             controller.seekRelative(-3); return true
         case 7 where mods.isEmpty:           // X   +3s
             controller.seekRelative(3); return true
-        case 123 where mods == .control:     // ⌃← -30s
-            controller.seekRelative(-30); return true
-        case 124 where mods == .control:     // ⌃→ +30s
-            controller.seekRelative(30); return true
         case 8 where mods == .shift:         // ⇧C  +85s (skip opening)
             controller.seekRelative(85); return true
 
         // ── Volume ────────────────────────────────────────────────
 
-        case 126 where mods.isEmpty:         // ↑   +5%
+        case 37 where mods.isEmpty:          // L   +5%
             controller.addVolume(5); return true
-        case 125 where mods.isEmpty:         // ↓   -5%
+        case 4 where mods.isEmpty:           // H   -5%
             controller.addVolume(-5); return true
-        case 126 where mods == .control:     // ⌃↑ +20%
-            controller.addVolume(20); return true
-        case 125 where mods == .control:     // ⌃↓ -20%
-            controller.addVolume(-20); return true
+        case 46 where mods.isEmpty:          // M   toggle mute
+            controller.toggleMute(); return true
+
+        // ── Subtitles ─────────────────────────────────────────────
+
+        case 8 where mods.isEmpty:           // C   toggle captions
+            controller.toggleSubtitles(); return true
 
         // ── Playback Speed ────────────────────────────────────────
 
@@ -79,20 +75,6 @@ struct KeyboardShortcutHandler {
             controller.setSpeed(3); return true
         case 86 where mods.isEmpty:          // Numpad4
             controller.setSpeed(4); return true
-
-        // ── Frame Stepping ────────────────────────────────────────
-
-        case 30 where mods.isEmpty:          // ]
-            controller.frameStep(); return true
-        case 33 where mods.isEmpty:          // [
-            controller.frameBackStep(); return true
-
-        // ── Fullscreen ────────────────────────────────────────────
-
-        case 36 where mods.isEmpty:          // Enter
-            window.toggleFullScreen(nil); return true
-        case 3 where mods.isEmpty:           // F
-            window.toggleFullScreen(nil); return true
 
         // ── Close / Stop ──────────────────────────────────────────
 

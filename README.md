@@ -275,22 +275,25 @@ All shortcuts are handled by `GestureTrackingView.keyDown(with:)` which delegate
 
 | Key | Action |
 |---|---|
-| `←` | Backward 5 seconds |
-| `→` | Forward 5 seconds |
+| `J` | Backward 30 seconds |
+| `K` | Forward 30 seconds |
 | `Z` | Backward 3 seconds |
 | `X` | Forward 3 seconds |
-| `⌃←` | Backward 30 seconds |
-| `⌃→` | Forward 30 seconds |
 | `⇧C` | Skip forward 85 seconds (anime opening/ending) |
 
 ### Volume
 
 | Key | Action |
 |---|---|
-| `↑` | Increase 5% |
-| `↓` | Decrease 5% |
-| `⌃↑` | Increase 20% |
-| `⌃↓` | Decrease 20% |
+| `L` | Increase 5% |
+| `H` | Decrease 5% |
+| `M` | Toggle mute |
+
+### Subtitles
+
+| Key | Action |
+|---|---|
+| `C` | Toggle captions |
 
 ### Playback Speed
 
@@ -303,21 +306,6 @@ All shortcuts are handled by `GestureTrackingView.keyDown(with:)` which delegate
 | `2` / `Numpad2` | Set 2.0x |
 | `3` / `Numpad3` | Set 3.0x |
 | `4` / `Numpad4` | Set 4.0x |
-
-### Frame Stepping
-
-| Key | Action |
-|---|---|
-| `[` | Previous frame |
-| `]` | Next frame |
-
-### Window
-
-| Key | Action |
-|---|---|
-| `Enter` | Toggle fullscreen |
-| `F` | Toggle fullscreen |
-
 
 ### Capture
 
@@ -336,7 +324,3 @@ All shortcuts are handled by `GestureTrackingView.keyDown(with:)` which delegate
 A working prototype exists with a borderless floating AppKit window, magnetic corner snapping, `libmpv` OpenGL playback, keyboard shortcuts, and drag-and-drop file loading.
 
 The current focus is stabilizing gesture interactions and refining window behavior before adding overlay controls or streaming support.
-
-## Recent changes
-
-- **2026-06-03** — Window-management rewrite. Replaced the SwiftUI `WindowGroup { ContentView() }` + `WindowAccessor` bridge with an AppKit-owned `FloatingPanel` (`NSPanel` subclass) hosted in `MainWindowController`. The panel opts out of the macOS Accessibility tree (`accessibilityAttributeNames → []`, `accessibilityIsIgnored → true`, etc.) so third-party window managers (Swish, Magnet, Rectangle, Moom, Hammerspoon, yabai) can no longer move or resize the window. The app also runs as a true `.accessory` — no Dock icon, no menu bar, not in ⌘+Tab — matching the system PiP behavior. Window setup moved from `Core/Windowing/WindowAccessor.swift` (deleted) to `Core/Windowing/FloatingPanel.swift` (NSPanel subclass) and `App/MainWindowController.swift` (NSWindowController + SwiftUI host).
