@@ -1,6 +1,76 @@
 # FloatyMPV
 
-Native macOS PiP-style video player built with AppKit and `libmpv`.
+Native macOS floating video player inspired by Arc Browser PiP and the system Picture-in-Picture experience — built with AppKit and `libmpv`.
+
+FloatyMPV is a lightweight always-on-top floating video player for macOS designed to stay out of your way while keeping videos instantly accessible anywhere on your desktop.
+
+Drop a video file into the window and it immediately plays inside a compact draggable PiP-style overlay with smooth native animations, magnetic snapping, hardware-accelerated playback, and zero Electron overhead.
+
+Unlike traditional media players, FloatyMPV is focused on a minimal distraction-free floating experience similar to Arc Browser mini player / macOS PiP behavior:
+- small floating window
+- smooth drag interactions
+- native-feeling motion
+- always visible
+- fast startup
+- low memory usage
+- optimized for multitasking
+
+Built entirely with native macOS technologies including AppKit, SwiftUI, OpenGL, Core Animation, and `libmpv`.
+
+---
+
+## Inspiration
+
+This project would not have been realistically possible without the incredible work done by the IINA macOS player and the broader mpv ecosystem.
+
+A huge amount of rendering knowledge, playback behavior, macOS integration patterns, and `libmpv` implementation details were learned by studying IINA and related open-source projects.
+
+Massive respect and thanks to:
+- IINA
+- mpv
+
+---
+
+## Disclosure
+
+This is primarily a learning and experimentation project.
+
+Heavy use of AI-assisted development workflows and Codex-style agentic coding tools were used during development.
+
+The project is heavily focused on exploring:
+- native macOS windowing
+- OpenGL rendering
+- `libmpv` integration
+- gesture systems
+- floating utility app architecture
+- playback optimization
+- smooth native-feeling interactions
+
+Expect architectural experimentation, refactors, and rough edges.
+
+---
+
+## Philosophy
+
+FloatyMPV intentionally prioritizes:
+- responsiveness
+- low resource usage
+- native macOS behavior
+- smooth animations
+- simplicity
+- keyboard-first interactions
+
+over:
+- bloated feature sets
+- plugin ecosystems
+- Electron wrappers
+- Chromium-based UI layers
+
+The target experience is simple:
+
+> Open video → drag anywhere → continue working.
+
+---
 
 ## What this project is
 
