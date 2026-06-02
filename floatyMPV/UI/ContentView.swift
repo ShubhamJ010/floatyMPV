@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var playerController = MPVController()
     @State private var isPickedUp = false
+    @State private var isSnapAnimating = false
     @State private var isTargeted = false
     var body: some View {
         ZStack {
@@ -22,7 +23,11 @@ struct ContentView: View {
                 .scaleEffect(isTargeted ? 1.02 : 1.0)
             
             if playerController.hasActiveFile {
-                VideoPlayerView(playerController: playerController, isGestureMoving: isPickedUp)
+                VideoPlayerView(
+                    playerController: playerController,
+                    isGestureMoving: isPickedUp,
+                    isSnapAnimating: isSnapAnimating
+                )
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
                 /// Visual indicator for the drop zone.
@@ -36,7 +41,13 @@ struct ContentView: View {
             y: isPickedUp || isTargeted ? 20 : 4
         )
         .background(WindowAccessor(aspectRatio: playerController.videoAspectRatio))
-        .overlay(GestureSurface(isPickedUp: $isPickedUp, playerController: playerController))
+        .overlay(
+            GestureSurface(
+                isPickedUp: $isPickedUp,
+                isSnapAnimating: $isSnapAnimating,
+                playerController: playerController
+            )
+        )
         .frame(
             minWidth: 280,
             idealWidth: 360,

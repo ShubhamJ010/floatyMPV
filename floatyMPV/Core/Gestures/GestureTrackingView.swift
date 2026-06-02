@@ -12,6 +12,12 @@ final class GestureTrackingView: NSView {
     /// It bridges the AppKit event world to the SwiftUI state world.
     var onPickedUpChanged: ((Bool) -> Void)?
 
+    /// A closure used to inform SwiftUI when the snap glide/settle animation
+    /// starts and ends. The rendering layer uses this to freeze GL output
+    /// for the duration of the animation, eliminating CGL lock contention
+    /// with the window compositor (same pattern as `onPickedUpChanged`).
+    var onSnapAnimatingChanged: ((Bool) -> Void)?
+
     /// The playback controller that keyboard shortcuts target.
     var playerController: MPVController?
 
@@ -336,6 +342,9 @@ final class GestureTrackingView: NSView {
         let touchCount = trackedTouches.count
 
         if touchCount == 2 {
+            // A new two-finger pickup interrupts any in-flight snap animation.
+            // Resume rendering immediately so the user sees live frames again.
+            endSnapAnimation()
             cancelPendingDrop()
             setPickup(active: true)
             lastCentroid = NSPoint.zero
@@ -402,7 +411,10 @@ final class GestureTrackingView: NSView {
         let nextOrigin = NSPoint(x: center.x - (nextWidth / 2.0), y: center.y - (nextHeight / 2.0))
         let nextFrame = NSRect(origin: nextOrigin, size: NSSize(width: nextWidth, height: nextHeight))
 
-        window.setFrame(nextFrame, display: true, animate: true)
+        // `display: false` matches every other gesture-driven setFrame call.
+        // The compositor handles repaint timing; we never need a synchronous
+        // GL redraw at the start of pickup.
+        window.setFrame(nextFrame, display: false, animate: true)
     }
 
     private func hideCursorIfNeeded() {
@@ -478,6 +490,12 @@ final class GestureTrackingView: NSView {
         pinchHitMinDuringCurrentGesture = false
         pinchHitMaxDuringCurrentGesture = false
         pinchAnchorCorner = nil
+        // Intentionally do NOT call endSnapAnimation() here. The snap animation
+        // outlives the gesture: `handleScrollMove` calls
+        // maybeSnapWindowFromRecentSwipe() THEN this reset on the same stack,
+        // so clearing the flag here would unfreeze rendering before the snap
+        // has even started. The animation owns its own lifecycle via the
+        // completion handler + safety timeout.
     }
 
     private func recordScrollSample(dx: CGFloat, dy: CGFloat) {
@@ -503,10 +521,36 @@ final class GestureTrackingView: NSView {
         let velocityX = totalDX / elapsed
         let velocityY = totalDY / elapsed
 
-        snapAnimationInFlight = true
+        beginSnapAnimation()
         recentScrollSamples.removeAll(keepingCapacity: true)
         snapEngine.animateSnap(window: window, velocityX: velocityX, velocityY: velocityY) { [weak self] in
-            self?.snapAnimationInFlight = false
+            self?.endSnapAnimation()
+        }
+        scheduleSnapAnimationSafetyTimeout()
+    }
+
+    /// Marks the snap animation as in flight and notifies SwiftUI so the
+    /// renderer can freeze. Idempotent — calling twice is a no-op.
+    private func beginSnapAnimation() {
+        guard !snapAnimationInFlight else { return }
+        snapAnimationInFlight = true
+        onSnapAnimatingChanged?(true)
+    }
+
+    /// Clears the in-flight flag and unfreezes the renderer. Safe to call
+    /// repeatedly; only the first call (per animation) propagates the change.
+    private func endSnapAnimation() {
+        guard snapAnimationInFlight else { return }
+        snapAnimationInFlight = false
+        onSnapAnimatingChanged?(false)
+    }
+
+    /// Safety net for the rare case where `animateSnap`'s completion handler
+    /// never fires (e.g. window closed mid-animation). Guarantees the
+    /// renderer never stays frozen for longer than `Config.snapSafetyTimeout`.
+    private func scheduleSnapAnimationSafetyTimeout() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.endSnapAnimation()
         }
     }
 }

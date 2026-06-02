@@ -63,6 +63,23 @@ class ViewLayer: CAOpenGLLayer {
     /// When true, we temporarily suspend rendering to eliminate lock contention.
     @Atomic var isGestureMoving = false
 
+    /// Tracks whether the window is mid snap-glide / settle animation.
+    /// When true, the compositor is sliding the (frozen) window frame to its
+    /// resting corner. We suspend GL rendering for the duration so the
+    /// `CGLLockContext` never competes with the window-move work.
+    ///
+    /// On the falling edge (true → false) we schedule one forced redraw so
+    /// the layer paints a fresh frame at the new position after settle.
+    @Atomic var isSnapAnimating: Bool = false {
+        didSet {
+            if oldValue && !isSnapAnimating {
+                mpvGLQueue.async { [weak self] in
+                    self?.update(force: true)
+                }
+            }
+        }
+    }
+
     /// Tracks whether the window is mid-resize. While live-resizing we push
     /// redraws aggressively so the video does not freeze at the wrong size.
     @Atomic var inLiveResize: Bool = false {
@@ -182,7 +199,7 @@ class ViewLayer: CAOpenGLLayer {
     ///   - A forced draw is pending (live resize, launch, etc.), or
     ///   - `shouldRenderUpdateFrame()` reports a new decoded frame from libmpv.
     override func canDraw(inCGLContext ctx: CGLContextObj, pixelFormat pf: CGLPixelFormatObj, forLayerTime t: CFTimeInterval, displayTime ts: UnsafePointer<CVTimeStamp>?) -> Bool {
-        if isGestureMoving {
+        if isGestureMoving || isSnapAnimating {
             return false
         }
         guard let controller = videoView?.playerController else { return false }

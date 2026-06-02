@@ -49,15 +49,20 @@ struct SnapEngine {
         let targetFrame = targetFrame(for: window.frame, in: visibleFrame, corner: corner)
         let overshootFrame = overshootFrame(from: window.frame, target: targetFrame)
 
+        // `display: false` is intentional: the GL renderer is suspended for the
+        // duration of this animation (see ViewLayer.isSnapAnimating), and the
+        // compositor slides the last-painted frame to the new origin. Asking
+        // for `display: true` here would force a repaint per animation tick
+        // and reintroduce the CGL lock contention we just eliminated.
         NSAnimationContext.runAnimationGroup { context in
             context.duration = Config.glideDuration
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.90, 0.30, 1.0)
-            window.animator().setFrame(overshootFrame, display: true)
+            window.animator().setFrame(overshootFrame, display: false)
         } completionHandler: {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = Config.settleDuration
                 context.timingFunction = CAMediaTimingFunction(controlPoints: 0.20, 0.88, 0.28, 1.0)
-                window.animator().setFrame(targetFrame, display: true)
+                window.animator().setFrame(targetFrame, display: false)
             } completionHandler: {
                 completion()
             }
