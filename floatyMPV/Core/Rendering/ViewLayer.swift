@@ -262,10 +262,10 @@ class ViewLayer: CAOpenGLLayer {
     }
 
     override func copyCGLPixelFormat(forDisplayMask mask: UInt32) -> CGLPixelFormatObj {
-        return cglPixelFormat
+        return CGLRetainPixelFormat(cglPixelFormat)
     }
 
     override func copyCGLContext(forPixelFormat pf: CGLPixelFormatObj) -> CGLContextObj {
-        return cglContext
+        return CGLRetainContext(cglContext)
     }
 }

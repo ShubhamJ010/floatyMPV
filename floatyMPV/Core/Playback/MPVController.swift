@@ -97,6 +97,8 @@ class MPVController: NSObject, ObservableObject {
         mpv_set_option_string(mpv, "vo", "libmpv")
         // hwdec = hardware decoding. On macOS this uses VideoToolbox for H.264/H.265.
         mpv_set_option_string(mpv, "hwdec", "auto")
+        // Keep the player active (idle) instead of quitting when there is no file playing.
+        mpv_set_option_string(mpv, "idle", "yes")
 
         // Step 3: quality / battery tradeoffs tuned for a small floating window.
         // See Architecture.md for rationale.
@@ -166,6 +168,7 @@ class MPVController: NSObject, ObservableObject {
         mpv_observe_property(mpv, 0, "speed", MPV_FORMAT_DOUBLE)
         mpv_observe_property(mpv, 0, "dwidth", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "dheight", MPV_FORMAT_INT64)
+        mpv_observe_property(mpv, 0, "idle-active", MPV_FORMAT_FLAG)
     }
 
     /// Call this when the window size changes to adapt video quality.
@@ -402,15 +405,12 @@ class MPVController: NSObject, ObservableObject {
     private func handleEvent(_ event: UnsafePointer<mpv_event>) {
         switch event.pointee.event_id {
         case MPV_EVENT_END_FILE:
-            mpvCommand(["playlist-clear"])
-            DispatchQueue.main.async { [weak self] in
-                self?.hasActiveFile = false
-            }
+            break
         case MPV_EVENT_PROPERTY_CHANGE:
             let prop = event.pointee.data.assumingMemoryBound(to: mpv_event_property.self).pointee
             let name = String(cString: prop.name)
-            if prop.format == MPV_FORMAT_DOUBLE {
-                let val = prop.data.assumingMemoryBound(to: Double.self).pointee
+            if prop.format == MPV_FORMAT_DOUBLE, let data = prop.data {
+                let val = data.assumingMemoryBound(to: Double.self).pointee
                 DispatchQueue.main.async { [weak self] in
                      if name == "time-pos" {
                         self?.currentTime = val
@@ -422,15 +422,20 @@ class MPVController: NSObject, ObservableObject {
                         self?.playbackSpeed = val
                     }
                 }
-            } else if prop.format == MPV_FORMAT_FLAG {
-                let val = prop.data.assumingMemoryBound(to: CInt.self).pointee != 0
+            } else if prop.format == MPV_FORMAT_FLAG, let data = prop.data {
+                let val = data.assumingMemoryBound(to: CInt.self).pointee != 0
                 DispatchQueue.main.async { [weak self] in
                     if name == "pause" {
                         self?.isPaused = val
+                    } else if name == "idle-active" {
+                        self?.hasActiveFile = !val
+                        if val {
+                            self?.mpvCommand(["playlist-clear"])
+                        }
                     }
                 }
-            } else if prop.format == MPV_FORMAT_INT64 {
-                let val = prop.data.assumingMemoryBound(to: Int64.self).pointee
+            } else if prop.format == MPV_FORMAT_INT64, let data = prop.data {
+                let val = data.assumingMemoryBound(to: Int64.self).pointee
                 DispatchQueue.main.async { [weak self] in
                     if name == "dwidth" {
                         self?.videoWidth = Int(val)
