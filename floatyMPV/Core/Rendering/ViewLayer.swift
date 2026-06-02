@@ -73,9 +73,7 @@ class ViewLayer: CAOpenGLLayer {
     @Atomic var isSnapAnimating: Bool = false {
         didSet {
             if oldValue && !isSnapAnimating {
-                mpvGLQueue.async { [weak self] in
-                    self?.update(force: true)
-                }
+                update(force: true)
             }
         }
     }
@@ -199,12 +197,15 @@ class ViewLayer: CAOpenGLLayer {
     ///   - A forced draw is pending (live resize, launch, etc.), or
     ///   - `shouldRenderUpdateFrame()` reports a new decoded frame from libmpv.
     override func canDraw(inCGLContext ctx: CGLContextObj, pixelFormat pf: CGLPixelFormatObj, forLayerTime t: CFTimeInterval, displayTime ts: UnsafePointer<CVTimeStamp>?) -> Bool {
+        guard let controller = videoView?.playerController else { return false }
+        // Periodically call shouldRenderUpdateFrame() to let libmpv update its internal clock
+        // and drop late frames in the background while rendering is suspended.
+        let hasUpdate = controller.shouldRenderUpdateFrame()
+        
         if isGestureMoving || isSnapAnimating {
             return false
         }
-        guard let controller = videoView?.playerController else { return false }
-        let shouldDraw = forceDraw || controller.shouldRenderUpdateFrame()
-        return shouldDraw
+        return forceDraw || hasUpdate
     }
 
     /// The actual paint routine called by Core Animation at vsync.
