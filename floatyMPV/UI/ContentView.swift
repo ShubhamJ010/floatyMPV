@@ -29,6 +29,17 @@ struct ContentView: View {
                     isSnapAnimating: isSnapAnimating
                 )
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    /// Cosmetic Gaussian blur when the renderer is frozen.
+                    ///
+                    /// `ViewLayer.canDraw` returns `false` while `isGestureMoving` or
+                    /// `isSnapAnimating` is true, so the last decoded frame stays on
+                    /// screen with no new frames arriving. Softening that frozen frame
+                    /// makes the freeze feel intentional — a settling visual — rather
+                    /// than a glitch. SwiftUI composites the AppKit-rendered output
+                    /// through this filter, so it does not touch the GL pipeline.
+                    .blur(radius: (isPickedUp) ? 6 : 0)
+                    .animation(.easeInOut(duration: 0.2), value: isPickedUp)
+                    .animation(.easeInOut(duration: 0.2), value: isSnapAnimating)
             } else {
                 /// Visual indicator for the drop zone.
                 DropZoneOverlay(isTargeted: isTargeted)
