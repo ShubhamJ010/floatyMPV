@@ -51,7 +51,6 @@ struct ContentView: View {
             radius: isPickedUp || isTargeted ? 30 : 10,
             y: isPickedUp || isTargeted ? 20 : 4
         )
-        .background(WindowAccessor(aspectRatio: playerController.videoAspectRatio))
         .overlay(
             GestureSurface(
                 isPickedUp: $isPickedUp,
@@ -70,6 +69,16 @@ struct ContentView: View {
         /// Register as a drop destination for file URLs.
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             handleDrop(providers: providers)
+        }
+        /// Forward aspect-ratio changes to `MainWindowController`, which owns
+        /// the `FloatingPanel` and applies the aspect-ratio lock + resize
+        /// clamp. SwiftUI cannot reach the AppKit-owned panel directly.
+        .onChange(of: playerController.videoAspectRatio) { _, newRatio in
+            NotificationCenter.default.post(
+                name: .videoAspectRatioChanged,
+                object: nil,
+                userInfo: [Notification.aspectRatioKey: newRatio]
+            )
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isPickedUp)
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isTargeted)

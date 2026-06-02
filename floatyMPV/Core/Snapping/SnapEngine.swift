@@ -27,7 +27,7 @@ struct SnapEngine {
         static let cornerInset: CGFloat = 16
         static let velocityWindow: CFTimeInterval = 0.10
         static let overshootDistance: CGFloat = 8
-        static let glideDuration: TimeInterval = 0.62
+        static let glideDuration: TimeInterval = 0.58
         static let settleDuration: TimeInterval = 0.52
     }
 
