@@ -250,6 +250,7 @@ override func accessibilityHitTest(_ point: NSPoint) -> Any? { return nil }
 | `linear-downscaling` | `no` | Skip linear correction |
 | `linear-upscaling` | `no` | Skip linear correction |
 | `video-latency-hacks` | `yes` | Lower decode latency for snappier playback |
+| `save-position-on-quit` | `yes` | Persist playback position to `watch_later` on quit / stop / drop-replace, so a re-drop resumes where it left off |
 
 **Observed properties**: `time-pos`, `duration`, `pause`, `volume`, `speed`, `dwidth`, `dheight`.
 
@@ -258,6 +259,8 @@ These choices trade maximum quality for responsiveness and battery life, which i
 ## Loading Videos
 
 Drag and drop a video file onto the window. Supported extensions: `mp4`, `mkv`, `avi`, `mov`, `m4v`, `flv`.
+
+Re-dropping a video that was previously stopped (or whose app session was quit) resumes playback from the last saved position. Position state is delegated to mpv's built-in `watch_later` store — no app-side persistence is involved. The first drop of a file always starts from `0`.
 
 ## Keyboard Shortcuts
 

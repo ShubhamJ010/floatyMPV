@@ -35,6 +35,7 @@ class MPVController: NSObject, ObservableObject {
     @Published var videoWidth: Int = 0
     @Published var videoHeight: Int = 0
     @Published var hasActiveFile = false         // True after a video is loaded
+    @Published var isMuted: Bool = false
 
     /// Computed aspect ratio of the loaded video. Used by `WindowAccessor`
     /// to lock the window shape so the video is not stretched.
@@ -99,6 +100,9 @@ class MPVController: NSObject, ObservableObject {
         mpv_set_option_string(mpv, "hwdec", "auto")
         // Keep the player active (idle) instead of quitting when there is no file playing.
         mpv_set_option_string(mpv, "idle", "yes")
+        // Persist the current playback position when mpv is terminated (e.g. on app quit),
+        // so the next `loadfile` of the same path auto-resumes via watch_later.
+        mpv_set_option_string(mpv, "save-position-on-quit", "yes")
 
         // Step 3: quality / battery tradeoffs tuned for a small floating window.
         // See Architecture.md for rationale.
@@ -169,6 +173,7 @@ class MPVController: NSObject, ObservableObject {
         mpv_observe_property(mpv, 0, "dwidth", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "dheight", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "idle-active", MPV_FORMAT_FLAG)
+        mpv_observe_property(mpv, 0, "mute", MPV_FORMAT_FLAG)
     }
 
     /// Call this when the window size changes to adapt video quality.
@@ -327,6 +332,7 @@ class MPVController: NSObject, ObservableObject {
 
     // Load file command
     func loadFile(path: String) {
+        savePositionForResume()
         hasActiveFile = true
         mpvCommand(["loadfile", path])
     }
@@ -338,7 +344,9 @@ class MPVController: NSObject, ObservableObject {
 
     func seek(to seconds: Double) {
         let secondsStr = String(seconds)
-        mpvCommand(["seek", secondsStr, "absolute"])
+        performSeekMuted { [weak self] in
+            self?.mpvCommand(["seek", secondsStr, "absolute"])
+        }
     }
 
     func setVolume(to val: Double) {
@@ -347,7 +355,31 @@ class MPVController: NSObject, ObservableObject {
     }
 
     func seekRelative(_ seconds: Double) {
-        mpvCommand(["seek", String(seconds), "relative"])
+        let secondsStr = String(seconds)
+        performSeekMuted { [weak self] in
+            self?.mpvCommand(["seek", secondsStr, "relative"])
+        }
+    }
+
+    private var seekMuteRestore: DispatchWorkItem?
+    private let seekMuteDelay: TimeInterval = 0.1
+
+    private func performSeekMuted(_ seekAction: @escaping () -> Void) {
+        let wasMuted = isMuted
+        if !wasMuted {
+            var muteFlag: CInt = 1
+            mpv_set_property(mpv, "mute", MPV_FORMAT_FLAG, &muteFlag)
+        }
+        seekAction()
+
+        seekMuteRestore?.cancel()
+        let restore = DispatchWorkItem { [weak self] in
+            guard let self, !wasMuted else { return }
+            var unmuteFlag: CInt = 0
+            mpv_set_property(mpv, "mute", MPV_FORMAT_FLAG, &unmuteFlag)
+        }
+        seekMuteRestore = restore
+        DispatchQueue.main.asyncAfter(deadline: .now() + seekMuteDelay, execute: restore)
     }
 
     func setSpeed(_ rate: Double) {
@@ -380,7 +412,16 @@ class MPVController: NSObject, ObservableObject {
     }
 
     func stop() {
+        savePositionForResume()
         mpvCommand(["stop"])
+    }
+
+    /// Writes the current playback position to mpv's watch_later store so the
+    /// next `loadfile` of the same path auto-resumes from here. Safe to call
+    /// when no file is loaded (no-op via the `hasActiveFile` guard).
+    func savePositionForResume() {
+        guard hasActiveFile else { return }
+        mpvCommand(["write-watch-later-config"])
     }
 
     private func readEvents() {
@@ -432,6 +473,8 @@ class MPVController: NSObject, ObservableObject {
                         if val {
                             self?.mpvCommand(["playlist-clear"])
                         }
+                    } else if name == "mute" {
+                        self?.isMuted = val
                     }
                 }
             } else if prop.format == MPV_FORMAT_INT64, let data = prop.data {
