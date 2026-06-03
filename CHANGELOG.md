@@ -4,6 +4,27 @@ This changelog documents the optimizations made to resolve window-drag jitter du
 
 ---
 
+## 🆕 2026-06-04 — Resume Playback & Removed Seek-Mute
+
+**What changed**
+
+- **Same-session resume.** `MPVController` now keeps an in-memory `lastKnownPositions: [String: Double]` keyed by file path, updated on every `time-pos` event. On `MPV_EVENT_FILE_LOADED` we look up the path and `seek` to the saved position before the first frame is rendered, so a re-drop of the same file picks up where you left off.
+- **Cross-session resume.** `lastKnownPositions` is persisted to `~/Library/Application Support/sj010.floatyMPV/resume.json`. Loaded in `mpvInit`; saved in `stop()` and `mpvUninitRendering()`. The `Q` shortcut (stop + close) now survives an app quit — re-launching and re-dropping the same file resumes.
+- **EOF clears the saved slot.** When `MPV_EVENT_END_FILE` fires with `MPV_END_FILE_REASON_EOF`, we `removeValue(forKey:)` for the current path so a re-drop of a fully-watched file starts from 0 instead of seeking to the last frame and re-ending immediately.
+- **Dropped the seek-mute hack.** `performSeekMuted`, `seekMuteRestore`, and the `isMuted` `@Published` property are gone. `seek` / `seekRelative` are back to plain one-liners.
+- **Removed the `playlist-clear` race.** The `idle-active` handler used to dispatch `playlist-clear` to the main queue, which could wipe a freshly-loaded file on a `W → drop` same-tick. `loadfile … replace` already owns playlist replacement; the handler now only mirrors `hasActiveFile`.
+- **Diagnostics.** `mpvCommand` logs the command and any `MPV_ERROR_*` return; `loadFile`, `stop`, `savePositionForResume`, `idle-active`, and the file lifecycle events (`START_FILE` / `FILE_LOADED` / `END_FILE`) print state for debugging.
+
+**Why it broke before**
+
+mpv's `loadfile` does **not** auto-resume from `watch_later` within a running session — only on fresh mpv startup. So `write-watch-later-config` + a later `loadfile` in the same process never connected. The `start=` option in the `loadfile` options string is rejected outright by this mpv build (`MPV_ERROR_INVALID_PARAMETER`). The fix had to be: load the file, then `seek` after `MPV_EVENT_FILE_LOADED` fires.
+
+**Files touched**
+
+- `floatyMPV/Core/Playback/MPVController.swift`
+
+---
+
 ## 🎯 Main Goal
 **Deliver perfectly smooth, zero-latency window-drag interactions (60fps+) using trackpad swipe gestures, even during active high-definition hardware video playback.**
 
