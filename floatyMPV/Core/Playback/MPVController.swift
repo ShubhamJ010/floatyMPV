@@ -35,7 +35,6 @@ class MPVController: NSObject, ObservableObject {
     @Published var videoWidth: Int = 0
     @Published var videoHeight: Int = 0
     @Published var hasActiveFile = false         // True after a video is loaded
-    @Published var isMuted: Bool = false
 
     /// Computed aspect ratio of the loaded video. Used by `WindowAccessor`
     /// to lock the window shape so the video is not stretched.
@@ -67,6 +66,52 @@ class MPVController: NSObject, ObservableObject {
     
     /// Flag to signal the event loop to stop during shutdown.
     @Atomic private var isShuttingDown = false
+
+    /// In-memory resume state. `loadfile` in a running mpv session does not
+    /// auto-resume from `watch_later`, so we track the last playback position
+    /// per file path here and pass it back as the `start` option on the next
+    /// `loadfile` of the same path.
+    ///
+    /// The dictionary is also persisted to `resumeFileURL` on `stop()` and on
+    /// shutdown so that `Q` (which closes the window and quits the app) leaves
+    /// a trail the next launch can pick up.
+    private var lastKnownPositions: [String: Double] = [:]
+    private var currentFilePath: String?
+
+    /// `~/Library/Application Support/sj010.floatyMPV/resume.json`. Created on
+    /// first access; the directory may not exist on a clean install.
+    private var resumeFileURL: URL {
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.temporaryDirectory
+        let dir = support.appendingPathComponent("sj010.floatyMPV", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("resume.json")
+    }
+
+    private func loadResumePositions() {
+        guard let data = try? Data(contentsOf: resumeFileURL),
+              let dict = try? JSONDecoder().decode([String: Double].self, from: data) else {
+            print("[MPV] no resume positions on disk")
+            return
+        }
+        lastKnownPositions = dict
+        print("[MPV] loaded \(dict.count) resume positions from \(resumeFileURL.lastPathComponent)")
+    }
+
+    private func saveResumePositions() {
+        guard !lastKnownPositions.isEmpty else {
+            print("[MPV] saveResumePositions: skipped (empty)")
+            return
+        }
+        do {
+            let data = try JSONEncoder().encode(lastKnownPositions)
+            try data.write(to: resumeFileURL, options: .atomic)
+            print("[MPV] saved \(lastKnownPositions.count) resume positions to \(resumeFileURL.lastPathComponent)")
+        } catch {
+            print("[MPV] saveResumePositions failed: \(error)")
+        }
+    }
 
     override init() {
         super.init()
@@ -101,7 +146,7 @@ class MPVController: NSObject, ObservableObject {
         // Keep the player active (idle) instead of quitting when there is no file playing.
         mpv_set_option_string(mpv, "idle", "yes")
         // Persist the current playback position when mpv is terminated (e.g. on app quit),
-        // so the next `loadfile` of the same path auto-resumes via watch_later.
+        // so a subsequent app session can resume from watch_later on the next `loadfile`.
         mpv_set_option_string(mpv, "save-position-on-quit", "yes")
 
         // Step 3: quality / battery tradeoffs tuned for a small floating window.
@@ -173,7 +218,10 @@ class MPVController: NSObject, ObservableObject {
         mpv_observe_property(mpv, 0, "dwidth", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "dheight", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "idle-active", MPV_FORMAT_FLAG)
-        mpv_observe_property(mpv, 0, "mute", MPV_FORMAT_FLAG)
+
+        // Step 7: hydrate the in-memory resume dictionary from disk so a re-drop
+        // after a previous app session can seek to the last position.
+        loadResumePositions()
     }
 
     /// Call this when the window size changes to adapt video quality.
@@ -295,6 +343,9 @@ class MPVController: NSObject, ObservableObject {
     }
 
     func mpvUninitRendering() {
+        // Persist before tearing down mpv — after `mpv_terminate_destroy` the
+        // handle is invalid and any in-memory state is about to be released.
+        saveResumePositions()
         uninitRendering()
         if mpv != nil {
             // Use mpv_terminate_destroy to gracefully shut down the event loop
@@ -318,6 +369,7 @@ class MPVController: NSObject, ObservableObject {
     // Helper to send arbitrary commands to mpv
     func mpvCommand(_ args: [String]) {
         guard let mpv = mpv else { return }
+        print("[MPV] cmd> \(args)")
         var cArgs = args.map { UnsafePointer<CChar>(strdup($0)) }
         cArgs.append(nil)
         defer {
@@ -327,14 +379,24 @@ class MPVController: NSObject, ObservableObject {
                 }
             }
         }
-        mpv_command(mpv, &cArgs)
+        let err = mpv_command(mpv, &cArgs)
+        if err < 0 {
+            print("[MPV] cmd< ERR \(err): \(String(cString: mpv_error_string(err))) for \(args)")
+        }
     }
 
     // Load file command
     func loadFile(path: String) {
+        print("[MPV] loadFile path=\(path) saved=\(lastKnownPositions[path] ?? -1) hasActive=\(hasActiveFile)")
         savePositionForResume()
         hasActiveFile = true
-        mpvCommand(["loadfile", path])
+        currentFilePath = path
+
+        // Same-session resume is handled in `MPV_EVENT_FILE_LOADED` (see
+        // `handleEvent`) — the `loadfile` command in this mpv build rejects
+        // `start=` in its options string, so we load first and seek after the
+        // demuxer reports the file is ready (before the first frame).
+        mpvCommand(["loadfile", path, "replace"])
     }
 
     func togglePause() {
@@ -343,10 +405,7 @@ class MPVController: NSObject, ObservableObject {
     }
 
     func seek(to seconds: Double) {
-        let secondsStr = String(seconds)
-        performSeekMuted { [weak self] in
-            self?.mpvCommand(["seek", secondsStr, "absolute"])
-        }
+        mpvCommand(["seek", String(seconds), "absolute"])
     }
 
     func setVolume(to val: Double) {
@@ -355,31 +414,7 @@ class MPVController: NSObject, ObservableObject {
     }
 
     func seekRelative(_ seconds: Double) {
-        let secondsStr = String(seconds)
-        performSeekMuted { [weak self] in
-            self?.mpvCommand(["seek", secondsStr, "relative"])
-        }
-    }
-
-    private var seekMuteRestore: DispatchWorkItem?
-    private let seekMuteDelay: TimeInterval = 0.1
-
-    private func performSeekMuted(_ seekAction: @escaping () -> Void) {
-        let wasMuted = isMuted
-        if !wasMuted {
-            var muteFlag: CInt = 1
-            mpv_set_property(mpv, "mute", MPV_FORMAT_FLAG, &muteFlag)
-        }
-        seekAction()
-
-        seekMuteRestore?.cancel()
-        let restore = DispatchWorkItem { [weak self] in
-            guard let self, !wasMuted else { return }
-            var unmuteFlag: CInt = 0
-            mpv_set_property(mpv, "mute", MPV_FORMAT_FLAG, &unmuteFlag)
-        }
-        seekMuteRestore = restore
-        DispatchQueue.main.asyncAfter(deadline: .now() + seekMuteDelay, execute: restore)
+        mpvCommand(["seek", String(seconds), "relative"])
     }
 
     func setSpeed(_ rate: Double) {
@@ -412,7 +447,12 @@ class MPVController: NSObject, ObservableObject {
     }
 
     func stop() {
+        print("[MPV] stop() hasActive=\(hasActiveFile) curPath=\(currentFilePath ?? "nil") lastPos=\(currentFilePath.flatMap { lastKnownPositions[$0] } ?? -1)")
         savePositionForResume()
+        // Persist in-memory positions to disk so a `Q` (close + quit) doesn't
+        // lose the trail. `time-pos` may not fire between here and the actual
+        // shutdown, so capture what we have now.
+        saveResumePositions()
         mpvCommand(["stop"])
     }
 
@@ -420,7 +460,11 @@ class MPVController: NSObject, ObservableObject {
     /// next `loadfile` of the same path auto-resumes from here. Safe to call
     /// when no file is loaded (no-op via the `hasActiveFile` guard).
     func savePositionForResume() {
-        guard hasActiveFile else { return }
+        guard hasActiveFile else {
+            print("[MPV] savePositionForResume: skipped (no active file)")
+            return
+        }
+        print("[MPV] savePositionForResume: writing watch_later for \(currentFilePath ?? "nil")")
         mpvCommand(["write-watch-later-config"])
     }
 
@@ -446,6 +490,32 @@ class MPVController: NSObject, ObservableObject {
     private func handleEvent(_ event: UnsafePointer<mpv_event>) {
         switch event.pointee.event_id {
         case MPV_EVENT_END_FILE:
+            let reason = event.pointee.data.assumingMemoryBound(to: mpv_event_end_file.self).pointee.reason
+            print("[MPV] EVENT_END_FILE reason=\(reason.rawValue) curPath=\(currentFilePath ?? "nil") lastPos=\(currentFilePath.flatMap { lastKnownPositions[$0] } ?? -1)")
+            // If the file reached EOF on its own, the saved position is at the
+            // last frame — re-dropping and seeking there would immediately
+            // re-end the file. Clear it so a re-drop starts from 0.
+            // Stop / quit / error reasons are left alone: those are explicit
+            // user intent and the position should remain resume-able.
+            if reason.rawValue == MPV_END_FILE_REASON_EOF.rawValue,
+               let path = currentFilePath {
+                lastKnownPositions.removeValue(forKey: path)
+                print("[MPV] EOF reached — cleared resume position for \(path)")
+            }
+            break
+        case MPV_EVENT_FILE_LOADED:
+            print("[MPV] EVENT_FILE_LOADED curPath=\(currentFilePath ?? "nil") saved=\(currentFilePath.flatMap { lastKnownPositions[$0] } ?? -1)")
+            if let path = currentFilePath,
+               let saved = lastKnownPositions[path],
+               saved > 0.5 {
+                print("[MPV] FILE_LOADED → seeking to \(saved) for \(path)")
+                mpvCommand(["seek", String(saved), "absolute"])
+            } else {
+                print("[MPV] FILE_LOADED (no resume target) for \(currentFilePath ?? "nil")")
+            }
+            break
+        case MPV_EVENT_START_FILE:
+            print("[MPV] EVENT_START_FILE curPath=\(currentFilePath ?? "nil")")
             break
         case MPV_EVENT_PROPERTY_CHANGE:
             let prop = event.pointee.data.assumingMemoryBound(to: mpv_event_property.self).pointee
@@ -455,6 +525,9 @@ class MPVController: NSObject, ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                      if name == "time-pos" {
                         self?.currentTime = val
+                        if let path = self?.currentFilePath {
+                            self?.lastKnownPositions[path] = val
+                        }
                     } else if name == "duration" {
                         self?.duration = val
                     } else if name == "volume" {
@@ -465,16 +538,21 @@ class MPVController: NSObject, ObservableObject {
                 }
             } else if prop.format == MPV_FORMAT_FLAG, let data = prop.data {
                 let val = data.assumingMemoryBound(to: CInt.self).pointee != 0
+                if name == "idle-active" {
+                    print("[MPV] prop idle-active=\(val) curPath=\(currentFilePath ?? "nil") (main-queue dispatched)")
+                }
                 DispatchQueue.main.async { [weak self] in
                     if name == "pause" {
                         self?.isPaused = val
                     } else if name == "idle-active" {
+                        // Only mirror the state. Playlist mutation is owned by
+                        // `loadfile … replace` and `stop`; doing it here would
+                        // race with a same-tick re-load (e.g. W → drop) and
+                        // clear the freshly-loaded file → black screen.
                         self?.hasActiveFile = !val
-                        if val {
-                            self?.mpvCommand(["playlist-clear"])
+                        if name == "idle-active" {
+                            print("[MPV] idle-active applied on main: hasActive=\(self?.hasActiveFile ?? false)")
                         }
-                    } else if name == "mute" {
-                        self?.isMuted = val
                     }
                 }
             } else if prop.format == MPV_FORMAT_INT64, let data = prop.data {
