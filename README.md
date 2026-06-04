@@ -17,6 +17,9 @@ Unlike traditional media players, FloatyMPV is focused on a minimal distraction-
 
 Built entirely with native macOS technologies including AppKit, SwiftUI, OpenGL, Core Animation, and `libmpv`.
 
+<img width="800" height="500" alt="CleanShot 2026-06-04 at 13 55 49" src="https://github.com/user-attachments/assets/17679ec3-432c-4d70-8fd9-9162b80c1537" />
+
+
 ---
 
 ## Inspiration
