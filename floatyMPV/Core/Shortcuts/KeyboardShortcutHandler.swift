@@ -94,6 +94,19 @@ struct KeyboardShortcutHandler {
         case 45 where mods.isEmpty:          // N
             controller.playlistNext(); return true
 
+        // ── Streaming / Paste ─────────────────────────────────────
+
+        case 9 where mods == .command:       // ⌘V  paste URL
+            if let string = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                let lower = string.lowercased()
+                if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+                    print("[Shortcuts] paste URL: \(string)")
+                    controller.loadMedia(string)
+                    return true
+                }
+            }
+            return false
+
         default:
             return false
         }
