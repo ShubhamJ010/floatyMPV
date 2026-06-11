@@ -1,3 +1,40 @@
+# Changelog
+
+## v0.2.0 — 2026-06-12 — YouTube Streaming & Loading UI
+
+**What changed**
+
+- **yt-dlp streaming support.** `MPVController` now configures mpv's built-in `ytdl_hook.lua` with `ytdl=yes` and a quality ladder (`bestvideo[height<=720]+bestaudio/best[height<=480]/best`). Calls `findYtdlBinary()` at init to locate the binary (bundled → `/opt/homebrew` → `/usr/local`). A new `loadMedia(_ pathOrURL:)` method dispatches HTTP/HTTPS URLs to mpv's `loadfile` command and local files to the existing `loadFile` path.
+- **⌘V paste URL.** `KeyboardShortcutHandler` reads `NSPasteboard.general` on ⌘V, detects HTTP/HTTPS strings, and routes them through `loadMedia`. No first-click requirement — the window responder is active.
+- **Drop URL support.** `ContentView.onDrop` now accepts `UTType.url` in addition to `UTType.fileURL`. Drops from Safari's address bar (or any browser) load directly into the player.
+- **Loading / buffering UI.** Added `isLoading`, `isViewReady`, `isBuffering` published properties. `ContentView` shows a `ProgressView` spinner during URL resolution (`isLoading`) and during seeks (`isBuffering`), with a `VisualEffectView(.hudWindow)` backdrop.
+- **Flash‑prevention for seek buffering.** The spinner stays visible until *both* mpv's `seeking` property returns `false` *and* `ViewLayer.draw()` produces a new frame. Prevents a visual flash between seek-complete and first-decoded frame.
+- **`viewDidRender()` callback.** `ViewLayer.draw()` calls `controller.viewDidRender()` after every successful render, which transitions `isViewReady` (first frame) and clears `isBuffering` (post-seek frame arrived).
+- **`seeking` property observation.** `MPVController` subscribes to mpv's `seeking` flag. On rising edge: sets `isBuffering = true`. On falling edge: sets `bufferCleared = true` (frame gate). Also observed: `idle-active` for clean state mirroring during streaming transitions.
+- **`vd-lavc-threads=2`.** Reduced from `0` (auto, ~8 threads for 4K) to cap decode parallelism, keeping latency low for the small 589×360 window.
+- **Copy yt-dlp build phase.** Xcode project now includes a `PBXShellScriptBuildPhase` that copies `Resources/yt-dlp` into the app bundle at build time. `ENABLE_USER_SCRIPT_SANDBOXING = NO` required for the script phase.
+- **`Scripts/update-ytdlp.sh`.** Downloads the latest macOS universal binary from `yt-dlp/yt-dlp` releases into `Resources/yt-dlp`.
+- **`DropZoneOverlay` text.** Updated from "Drop to Play Video" / "Drop Video Here" to "Drop to Play" / "Drop Video or Paste URL".
+- **Resume position fix for streams.** `MPV_EVENT_END_FILE` no longer resets `isLoading` on non-error reasons, so a `loadfile … replace` (new URL while playing) doesn't overwrite the loading state set by `loadMedia`.
+
+**Why it broke before**
+
+mpv has no built-in UI for loading states. Without `isLoading` / `isViewReady` / `isBuffering`, streaming URL resolution was invisible — the window stayed dark until the stream resolved. Seek transitions were also invisible, making the player feel unresponsive. The buffering overlay needed explicit frame-gating to avoid a flash between "seek done" and "frame rendered."
+
+**Files touched**
+
+- `floatyMPV/Core/Playback/MPVController.swift`
+- `floatyMPV/UI/ContentView.swift`
+- `floatyMPV/Core/Rendering/ViewLayer.swift`
+- `floatyMPV/Core/Shortcuts/KeyboardShortcutHandler.swift`
+- `floatyMPV/UI/DropZoneOverlay.swift`
+- `floatyMPV.xcodeproj/project.pbxproj`
+- `README.md`
+- `Scripts/update-ytdlp.sh`
+- `.gitignore`
+
+---
+
 # Session Changelog: Gesture Smoothness Optimization 🛠️📖
 
 This changelog documents the optimizations made to resolve window-drag jitter during active video playback. It serves as an educational reference for Swift, AppKit, and OpenGL developers working on the `floatyMPV` codebase.
