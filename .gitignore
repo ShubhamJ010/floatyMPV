@@ -1,0 +1,7 @@
+# yt-dlp standalone binary (download via Scripts/update-ytdlp.sh)
+Resources/yt-dlp
+
+# Xcode
+DerivedData/
+*.xcuserdata
+*.xcworkspace/xcuserdata

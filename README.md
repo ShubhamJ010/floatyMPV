@@ -240,7 +240,7 @@ override func accessibilityHitTest(_ point: NSPoint) -> Any? { return nil }
 |---|---|---|
 | `vo` | `libmpv` | Render into the application's own surface |
 | `hwdec` | `auto` | Enable VideoToolbox hardware decoding when available |
-| `vd-lavc-threads` | `0` | Auto-detect decode thread count |
+| `vd-lavc-threads` | `2` | Cap decode threads for low-latency (avoids ~8 threads on 4K) |
 | `opengl-pbo` | `yes` | Faster GPU uploads via pixel buffer objects |
 | `opengl-glfinish` | `no` | Non-blocking; `glFlush` is used instead |
 | `framedrop` | `vo` | Drop render frames to keep audio in sync |
@@ -255,15 +255,31 @@ override func accessibilityHitTest(_ point: NSPoint) -> Any? { return nil }
 | `video-latency-hacks` | `yes` | Lower decode latency for snappier playback |
 | `save-position-on-quit` | `yes` | Persist playback position to `watch_later` on quit / stop / drop-replace, so a re-drop resumes where it left off |
 
-**Observed properties**: `time-pos`, `duration`, `pause`, `volume`, `speed`, `dwidth`, `dheight`.
+**Observed properties**: `time-pos`, `duration`, `pause`, `volume`, `speed`, `dwidth`, `dheight`, `idle-active`, `seeking`.
+
+### Streaming (yt-dlp)
+
+| Option | Value | Purpose |
+|---|---|---|
+| `ytdl` | `yes` | Enable mpv's built-in `ytdl_hook.lua` for YouTube URL resolution |
+| `ytdl-format` | `bestvideo[height<=720]+bestaudio/best[height<=480]/best` | Quality ladder: 720p → 480p → best available |
+| `script-opts` | `ytdl_hook-ytdl_path=<bundle or system path>` | Point mpv at the yt-dlp binary (bundled copy preferred) |
 
 These choices trade maximum quality for responsiveness and battery life, which is the right trade-off for a PiP-style floating player.
 
 ## Loading Videos
 
+### Local files
+
 Drag and drop a video file onto the window. Supported extensions: `mp4`, `mkv`, `avi`, `mov`, `m4v`, `flv`.
 
 Re-dropping a video that was previously stopped (or whose app session was quit) resumes playback from the last saved position. Position state is delegated to mpv's built-in `watch_later` store — no app-side persistence is involved. The first drop of a file always starts from `0`.
+
+### Streaming URLs
+
+Drop a URL (from Safari's address bar, for example) or press **⌘V** with a YouTube / YouTube Music link copied to the clipboard. The app passes the URL to mpv, which uses the bundled `yt-dlp` to resolve the stream.
+
+During URL resolution a loading spinner covers the window. After playback starts, a brief buffering spinner appears during seeks until the first decoded frame arrives.
 
 ## Keyboard Shortcuts
 
@@ -325,8 +341,39 @@ All shortcuts are handled by `GestureTrackingView.keyDown(with:)` which delegate
 |---|---|
 | `N` | Next file in playlist |
 
+### Streaming
+
+| Key | Action |
+|---|---|
+| `⌘V` | Paste YouTube / YouTube Music URL from clipboard and start playback |
+
 ## Status
 
-A working prototype exists with a borderless floating AppKit window, magnetic corner snapping, `libmpv` OpenGL playback, keyboard shortcuts, and drag-and-drop file loading.
+Working floating player with borderless AppKit window, magnetic corner snapping, `libmpv` OpenGL playback, keyboard shortcuts, drag-and-drop file loading, and YouTube / YouTube Music streaming via `yt-dlp`.
 
-The current focus is stabilizing gesture interactions and refining window behavior before adding overlay controls or streaming support.
+### Done
+- Borderless floating panel with accessibility opt-out (invisible to third-party window managers)
+- Magnetic corner snapping via `SnapEngine`
+- `libmpv` OpenGL playback through `CAOpenGLLayer`
+- Keyboard shortcuts (playback, seek, volume, speed, subtitles, screenshot, playlist)
+- Drag-and-drop local video files with resume position
+- YouTube / YouTube Music streaming via `yt-dlp` (bundle or system fallback)
+- ⌘V paste URL from clipboard
+- Drop URL from browser
+- Loading spinner during URL resolution
+- Buffering spinner during seeks (with flash-prevention: waits for first decoded frame)
+- `vd-lavc-threads=2` for low-latency decode
+
+## Development Setup
+
+### yt-dlp (streaming support)
+
+The app bundles `yt-dlp` for YouTube / YouTube Music playback. Download the standalone macOS binary:
+
+```bash
+bash Scripts/update-ytdlp.sh
+```
+
+Run this once after cloning. Re-run periodically to update.
+
+**Fallback**: If the bundled binary is missing, the app also checks `/opt/homebrew/bin/yt-dlp` and `/usr/local/bin/yt-dlp` automatically.

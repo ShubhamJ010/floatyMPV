@@ -10,7 +10,7 @@ struct DropZoneOverlay: View {
                 .foregroundStyle(isTargeted ? .primary : .secondary)
                 .scaleEffect(isTargeted ? 1.1 : 0.9)
             
-            Text(isTargeted ? "Drop to Play Video" : "Drop Video Here")
+            Text(isTargeted ? "Drop to Play" : "Drop Video or Paste URL")
                 .font(.system(size: 14, weight: .semibold, design: .rounded))
                 .foregroundStyle(isTargeted ? .primary : .secondary)
         }

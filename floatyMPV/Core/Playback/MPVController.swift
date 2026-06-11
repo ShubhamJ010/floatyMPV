@@ -35,6 +35,13 @@ class MPVController: NSObject, ObservableObject {
     @Published var videoWidth: Int = 0
     @Published var videoHeight: Int = 0
     @Published var hasActiveFile = false         // True after a video is loaded
+    @Published var isLoading = false             // True while streaming URL is being resolved
+    @Published var isViewReady = false            // True after the first video frame has been rendered
+    @Published var isBuffering = false               // True while mpv is seeking / frame-frozen after a seek
+    /// Set to `true` when mpv's `seeking` property returns to `false`.
+    /// The overlay stays up until both the seek is done AND a fresh frame renders,
+    /// preventing a flash between seek-complete and first-decoded frame.
+    private var bufferCleared = false
 
     /// Computed aspect ratio of the loaded video. Used by `WindowAccessor`
     /// to lock the window shape so the video is not stretched.
@@ -185,7 +192,21 @@ class MPVController: NSObject, ObservableObject {
         // to an even height (libavfilter requirement).
         mpv_set_option_string(mpv, "vf", "lavfi=[scale=640:-2:flags=fast_bilinear]")
 
-        // Step 4: register a C callback that libmpv will call when new events
+        // Step 4: enable yt-dlp integration for streaming URLs.
+        // mpv's built-in ytdl_hook.lua handles URL resolution automatically.
+        mpv_set_option_string(mpv, "ytdl", "yes")
+        // Quality ladder: 720p → 480p → best available
+        mpv_set_option_string(mpv, "ytdl-format", "bestvideo[height<=720]+bestaudio/best[height<=480]/best")
+        // Point mpv at the yt-dlp binary (bundled copy first, then system fallback).
+        // Must be set before mpv_initialize() so the ytdl_hook picks it up at load time.
+        if let ytdlpPath = findYtdlBinary() {
+            mpv_set_option_string(mpv, "script-opts", "ytdl_hook-ytdl_path=\(ytdlpPath)")
+            print("[MPV] yt-dlp configured at \(ytdlpPath)")
+        } else {
+            print("[MPV] yt-dlp not found — streaming URLs will not work")
+        }
+
+        // Step 5: register a C callback that libmpv will call when new events
         // (property changes, end-of-file, etc.) are available.
         //
         // The callback receives `ctx`, the pointer we pass as the third argument.
@@ -199,13 +220,13 @@ class MPVController: NSObject, ObservableObject {
             controller.readEvents()
         }, mutableRawPointerOf(obj: self))
 
-        // Step 5: finalize initialization. After this the engine is ready.
+        // Step 6: finalize initialization. After this the engine is ready.
         let err = mpv_initialize(mpv)
         if err < 0 {
             print("Failed to initialize mpv: \(String(cString: mpv_error_string(err)))")
         }
 
-        // Step 6: subscribe to mpv "properties" we want to observe.
+        // Step 7: subscribe to mpv "properties" we want to observe.
         // Whenever one changes, mpv emits a `MPV_EVENT_PROPERTY_CHANGE` event.
         // We handle it in `handleEvent(_:)` and mirror the value into @Published.
         //
@@ -218,8 +239,9 @@ class MPVController: NSObject, ObservableObject {
         mpv_observe_property(mpv, 0, "dwidth", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "dheight", MPV_FORMAT_INT64)
         mpv_observe_property(mpv, 0, "idle-active", MPV_FORMAT_FLAG)
+        mpv_observe_property(mpv, 0, "seeking", MPV_FORMAT_FLAG)
 
-        // Step 7: hydrate the in-memory resume dictionary from disk so a re-drop
+        // Step 8: hydrate the in-memory resume dictionary from disk so a re-drop
         // after a previous app session can seek to the last position.
         loadResumePositions()
     }
@@ -366,6 +388,27 @@ class MPVController: NSObject, ObservableObject {
         return (flags & UInt64(MPV_RENDER_UPDATE_FRAME.rawValue)) > 0
     }
 
+    /// Called by `ViewLayer.draw()` after every successful render. Handles
+    /// two transitions on the main thread:
+    ///   - Sets `isViewReady` to `true` on the very first frame so the initial
+    ///     loading spinner is removed and the video becomes visible.
+    ///   - Clears `isBuffering` only when mpv says the seek is done
+    ///     (`bufferCleared == true`) AND a new frame has arrived. This prevents
+    ///     a flash between seek-complete and the first decoded frame.
+    func viewDidRender() {
+        DispatchQueue.main.async {
+            if !self.isViewReady {
+                self.isViewReady = true
+                print("[MPV] first frame rendered — view ready")
+            }
+            if self.isBuffering && self.bufferCleared {
+                self.isBuffering = false
+                self.bufferCleared = false
+                print("[MPV] post-buffer frame rendered — buffering done")
+            }
+        }
+    }
+
     // Helper to send arbitrary commands to mpv
     func mpvCommand(_ args: [String]) {
         guard let mpv = mpv else { return }
@@ -385,11 +428,52 @@ class MPVController: NSObject, ObservableObject {
         }
     }
 
+    /// Locates the yt-dlp binary. Checks the app bundle first, then known
+    /// system paths. Returns nil if not found anywhere.
+    private func findYtdlBinary() -> String? {
+        let candidates = [
+            Bundle.main.resourcePath.map { ($0 as NSString).appendingPathComponent("yt-dlp") },
+            "/opt/homebrew/bin/yt-dlp",
+            "/usr/local/bin/yt-dlp",
+        ].compactMap { $0 }
+
+        for path in candidates {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    /// Loads media from either a local file path or a streaming URL.
+    /// - If `pathOrURL` starts with `http://` or `https://`, the string is
+    ///   passed directly to mpv and resolved by the yt-dlp hook.
+    /// - Otherwise the existing file-loading path (with resume support) is used.
+    func loadMedia(_ pathOrURL: String) {
+        let lower = pathOrURL.lowercased()
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+            print("[MPV] loadURL url=\(pathOrURL)")
+            savePositionForResume()
+            isLoading = true
+            isViewReady = false
+            isBuffering = false
+            bufferCleared = false
+            currentFilePath = pathOrURL
+            mpvCommand(["loadfile", pathOrURL, "replace"])
+        } else {
+            loadFile(path: pathOrURL)
+        }
+    }
+
     // Load file command
     func loadFile(path: String) {
         print("[MPV] loadFile path=\(path) saved=\(lastKnownPositions[path] ?? -1) hasActive=\(hasActiveFile)")
         savePositionForResume()
+        isLoading = false
         hasActiveFile = true
+        isViewReady = false
+        isBuffering = false
+        bufferCleared = false
         currentFilePath = path
 
         // Same-session resume is handled in `MPV_EVENT_FILE_LOADED` (see
@@ -448,6 +532,10 @@ class MPVController: NSObject, ObservableObject {
 
     func stop() {
         print("[MPV] stop() hasActive=\(hasActiveFile) curPath=\(currentFilePath ?? "nil") lastPos=\(currentFilePath.flatMap { lastKnownPositions[$0] } ?? -1)")
+        isLoading = false
+        isViewReady = false
+        isBuffering = false
+        bufferCleared = false
         savePositionForResume()
         // Persist in-memory positions to disk so a `Q` (close + quit) doesn't
         // lose the trail. `time-pos` may not fire between here and the actual
@@ -490,8 +578,31 @@ class MPVController: NSObject, ObservableObject {
     private func handleEvent(_ event: UnsafePointer<mpv_event>) {
         switch event.pointee.event_id {
         case MPV_EVENT_END_FILE:
-            let reason = event.pointee.data.assumingMemoryBound(to: mpv_event_end_file.self).pointee.reason
-            print("[MPV] EVENT_END_FILE reason=\(reason.rawValue) curPath=\(currentFilePath ?? "nil") lastPos=\(currentFilePath.flatMap { lastKnownPositions[$0] } ?? -1)")
+            let endFile = event.pointee.data.assumingMemoryBound(to: mpv_event_end_file.self).pointee
+            let reason = endFile.reason
+            let reasonU32 = UInt32(reason.rawValue)
+            let reasonDesc: String
+            switch reasonU32 {
+            case MPV_END_FILE_REASON_EOF.rawValue: reasonDesc = "EOF"
+            case MPV_END_FILE_REASON_STOP.rawValue: reasonDesc = "stop"
+            case MPV_END_FILE_REASON_QUIT.rawValue: reasonDesc = "quit"
+            case MPV_END_FILE_REASON_ERROR.rawValue: reasonDesc = "error"
+            case MPV_END_FILE_REASON_REDIRECT.rawValue: reasonDesc = "redirect"
+            default: reasonDesc = "unknown(\(reason.rawValue))"
+            }
+            if reasonDesc == "error" {
+                let errStr = String(cString: mpv_error_string(endFile.error))
+                print("[MPV] playback failed: \(errStr) for \(currentFilePath ?? "nil")")
+                DispatchQueue.main.async { [weak self] in
+                    self?.isLoading = false
+                    self?.hasActiveFile = false
+                    self?.isViewReady = false
+                    self?.isBuffering = false
+                    self?.bufferCleared = false
+                }
+            } else {
+                print("[MPV] EVENT_END_FILE reason=\(reasonDesc) curPath=\(currentFilePath ?? "nil") lastPos=\(currentFilePath.flatMap { lastKnownPositions[$0] } ?? -1)")
+            }
             // If the file reached EOF on its own, the saved position is at the
             // last frame — re-dropping and seeking there would immediately
             // re-end the file. Clear it so a re-drop starts from 0.
@@ -501,10 +612,18 @@ class MPVController: NSObject, ObservableObject {
                let path = currentFilePath {
                 lastKnownPositions.removeValue(forKey: path)
                 print("[MPV] EOF reached — cleared resume position for \(path)")
+            } else if reason.rawValue == MPV_END_FILE_REASON_ERROR.rawValue,
+                      let path = currentFilePath {
+                lastKnownPositions.removeValue(forKey: path)
+                print("[MPV] playback error — cleared resume position for \(path)")
             }
             break
         case MPV_EVENT_FILE_LOADED:
             print("[MPV] EVENT_FILE_LOADED curPath=\(currentFilePath ?? "nil") saved=\(currentFilePath.flatMap { lastKnownPositions[$0] } ?? -1)")
+            DispatchQueue.main.async { [weak self] in
+                self?.isLoading = false
+                self?.hasActiveFile = true
+            }
             if let path = currentFilePath,
                let saved = lastKnownPositions[path],
                saved > 0.5 {
@@ -515,7 +634,7 @@ class MPVController: NSObject, ObservableObject {
             }
             break
         case MPV_EVENT_START_FILE:
-            print("[MPV] EVENT_START_FILE curPath=\(currentFilePath ?? "nil")")
+            print("[MPV] playback started \(currentFilePath ?? "nil")")
             break
         case MPV_EVENT_PROPERTY_CHANGE:
             let prop = event.pointee.data.assumingMemoryBound(to: mpv_event_property.self).pointee
@@ -544,14 +663,27 @@ class MPVController: NSObject, ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     if name == "pause" {
                         self?.isPaused = val
+                    } else if name == "seeking" {
+                        guard let self else { return }
+                        if val {
+                            self.isBuffering = true
+                            self.bufferCleared = false
+                            print("[MPV] seek started")
+                        } else {
+                            self.bufferCleared = true
+                            print("[MPV] seek ended, waiting for next frame")
+                        }
                     } else if name == "idle-active" {
-                        // Only mirror the state. Playlist mutation is owned by
-                        // `loadfile … replace` and `stop`; doing it here would
-                        // race with a same-tick re-load (e.g. W → drop) and
-                        // clear the freshly-loaded file → black screen.
-                        self?.hasActiveFile = !val
-                        if name == "idle-active" {
-                            print("[MPV] idle-active applied on main: hasActive=\(self?.hasActiveFile ?? false)")
+                        // Mirror the state, but only when not in streaming-loading
+                        // (which manages hasActiveFile via EVENT_FILE_LOADED).
+                        guard let self else { return }
+                        if self.isLoading {
+                            print("[MPV] idle-active skipped (loading)")
+                        } else {
+                            self.hasActiveFile = !val
+                            self.isViewReady = false
+                            self.bufferCleared = false
+                            print("[MPV] idle-active applied on main: hasActive=\(self.hasActiveFile)")
                         }
                     }
                 }

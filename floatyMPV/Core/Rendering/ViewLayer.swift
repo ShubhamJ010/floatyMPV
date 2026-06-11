@@ -253,6 +253,7 @@ class ViewLayer: CAOpenGLLayer {
                     controller.lockAndSetOpenGLContext()
                     mpv_render_context_render(context, &params)
                     controller.unlockOpenGLContext()
+                    controller.viewDidRender()
                 }
             }
         }

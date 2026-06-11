@@ -22,7 +22,7 @@ struct ContentView: View {
                 /// Subtle scale effect when targeted by a drop.
                 .scaleEffect(isTargeted ? 1.02 : 1.0)
             
-            if playerController.hasActiveFile {
+            if playerController.hasActiveFile || playerController.isLoading {
                 VideoPlayerView(
                     playerController: playerController,
                     isGestureMoving: isPickedUp,
@@ -37,10 +37,32 @@ struct ContentView: View {
                     /// makes the freeze feel intentional — a settling visual — rather
                     /// than a glitch. SwiftUI composites the AppKit-rendered output
                     /// through this filter, so it does not touch the GL pipeline.
-                    .blur(radius: (isPickedUp) ? 6 : 0)
+                    .opacity(playerController.isViewReady ? 1 : 0)
+                    .blur(radius: (isPickedUp || !playerController.isViewReady) ? 6 : 0)
                     .animation(.easeInOut(duration: 0.2), value: isPickedUp)
                     .animation(.easeInOut(duration: 0.2), value: isSnapAnimating)
-            } else {
+            }
+
+            if playerController.isLoading || (playerController.hasActiveFile && !playerController.isViewReady) {
+                VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        ProgressView()
+                            .controlSize(.large)
+                    )
+            }
+
+            if playerController.isBuffering && playerController.isViewReady {
+                VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        ProgressView()
+                            .controlSize(.large)
+                    )
+                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+            }
+
+            if !playerController.hasActiveFile && !playerController.isLoading {
                 /// Visual indicator for the drop zone.
                 DropZoneOverlay(isTargeted: isTargeted)
             }
@@ -66,8 +88,8 @@ struct ContentView: View {
             idealHeight: 220,
             maxHeight: .infinity
         )
-        /// Register as a drop destination for file URLs.
-        .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+        /// Register as a drop destination for file URLs and streaming URLs.
+        .onDrop(of: [.fileURL, .url], isTargeted: $isTargeted) { providers in
             handleDrop(providers: providers)
         }
         /// Forward aspect-ratio changes to `MainWindowController`, which owns
@@ -84,7 +106,9 @@ struct ContentView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: isTargeted)
     }
 
-    /// Processes the dropped items and filters for .mp4 files.
+    /// Processes the dropped items.
+    /// Local video files use the existing file-loading path.
+    /// HTTP/HTTPS URLs are passed to mpv's yt-dlp hook for streaming.
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
@@ -100,6 +124,16 @@ struct ContentView: View {
                             }
                         } else {
                             print("[DropZone] Rejected: \(url.path) (unsupported format)")
+                        }
+                    }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                _ = provider.loadObject(ofClass: URL.self) { url, error in
+                    if let url = url, let scheme = url.scheme?.lowercased(),
+                       (scheme == "http" || scheme == "https") {
+                        print("[DropZone] Streaming URL: \(url.absoluteString)")
+                        DispatchQueue.main.async {
+                            playerController.loadMedia(url.absoluteString)
                         }
                     }
                 }
